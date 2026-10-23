@@ -11,7 +11,7 @@ function formatTime(iso) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-export default function ChatWindow({ peer, me, messages, status, onSend }) {
+export default function ChatWindow({ peer, me, messages, status, onSend, onRetry }) {
   const [text, setText] = useState('');
   const endRef = useRef(null);
 
@@ -57,7 +57,20 @@ export default function ChatWindow({ peer, me, messages, status, onSend }) {
             {m.content}
             <span className="meta">
               {m.state === 'sending' && 'Sending…'}
-              {m.state === 'failed' && `Not sent: ${m.error}`}
+              {m.state === 'failed' && (
+                <>
+                  Not sent: {m.error}{' '}
+                  <button
+                    type="button"
+                    className="retry"
+                    onClick={() => onRetry(m)}
+                    disabled={offline}
+                    data-testid="retry-button"
+                  >
+                    Try again
+                  </button>
+                </>
+              )}
               {m.state !== 'sending' && m.state !== 'failed' && formatTime(m.timestamp)}
             </span>
           </li>

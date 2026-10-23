@@ -94,3 +94,7 @@ button, input { font: inherit; }
 .user-text { display: flex; flex-direction: column; min-width: 0; }
 .user-name { font-weight: 600; }
 .user-status { font-size: 0.8rem; color: var(--muted); }
+
+/* Chat window (CHATAPP-46) */
+.retry { padding: 0; border: 0; background: none; color: var(--warn); font-weight: 600; text-decoration: underline; cursor: pointer; }
+.retry:disabled { opacity: 0.5; cursor: not-allowed; }
