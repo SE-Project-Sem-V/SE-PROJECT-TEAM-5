@@ -1,0 +1,64 @@
+name: Backend database CI
+
+on:
+  push:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-db-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-db-ci.yml"
+
+jobs:
+  database:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Configuration and failure handling tests
+        run: npm test
+      - name: Start disposable PostgreSQL with a generated private password
+        shell: bash
+        run: |
+          set -euo pipefail
+          db_password="$(openssl rand -hex 32)"
+          echo "::add-mask::$db_password"
+          echo "PGPASSWORD=$db_password" >> "$GITHUB_ENV"
+          export POSTGRES_PASSWORD="$db_password"
+          docker run --detach --name chatapp-db-test \
+            --env POSTGRES_PASSWORD --env POSTGRES_USER=chatapp --env POSTGRES_DB=chatapp_test \
+            --publish 127.0.0.1:5432:5432 \
+            --health-cmd='pg_isready -U chatapp -d chatapp_test' \
+            --health-interval=2s --health-timeout=3s --health-retries=30 \
+            postgres:18.6-bookworm
+          for attempt in $(seq 1 40); do
+            if [ "$(docker inspect --format '{{.State.Health.Status}}' chatapp-db-test)" = healthy ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "PostgreSQL did not become healthy in time."
+          exit 1
+      - name: Real PostgreSQL integration tests
+        run: npm run test:db
+        env:
+          NODE_ENV: test
+          PGHOST: 127.0.0.1
+          PGPORT: 5432
+          PGUSER: chatapp
+          PGDATABASE: chatapp_dev
+          TEST_PGDATABASE: chatapp_test
+          DB_SSL_MODE: disable
+      - name: Remove disposable database
+        if: always()
+        run: docker rm --force --volumes chatapp-db-test || true

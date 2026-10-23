@@ -1,0 +1,20 @@
+services:
+  db:
+    image: postgres:18.6-bookworm
+    environment:
+      POSTGRES_DB: ${PGDATABASE:?Set PGDATABASE in backend/.env}
+      POSTGRES_USER: ${PGUSER:?Set PGUSER in backend/.env}
+      POSTGRES_PASSWORD: ${PGPASSWORD:?Set a private PGPASSWORD in backend/.env}
+    ports:
+      - "127.0.0.1:${PGPORT:-5432}:5432"
+    volumes:
+      # PostgreSQL 18 images use a versioned data directory under this mount.
+      - chatapp_pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  chatapp_pgdata:
