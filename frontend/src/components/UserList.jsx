@@ -37,15 +37,35 @@ export default function UserList({ token, meId, selectedId, unread, onSelect }) 
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        {query && (
+          <button
+            type="button"
+            className="search-clear"
+            aria-label="Clear search"
+            data-testid="user-search-clear"
+            onClick={() => setQuery('')}
+          >
+            ×
+          </button>
+        )}
       </div>
+
+      {state === 'loading' && (
+        <p className="note" role="status">
+          Searching…
+        </p>
+      )}
       {state === 'error' && (
-        <p className="note">Could not load users. Check your connection and try again.</p>
+        <p className="note" role="alert">
+          Could not load users. Check your connection and try again.
+        </p>
       )}
       {state === 'ready' && users.length === 0 && (
         <p className="note" data-testid="no-users">
-          {query.trim() ? `No users match “${query}”.` : 'No other users yet.'}
+          {query.trim() ? `No users match “${query.trim()}”.` : 'No other users yet.'}
         </p>
       )}
+
       <ul className="users">
         {users.map((user) => (
           <li key={user.id}>
@@ -58,9 +78,9 @@ export default function UserList({ token, meId, selectedId, unread, onSelect }) 
               onClick={() => onSelect(user)}
             >
               <span className={`dot ${user.online ? 'on' : ''}`} aria-hidden="true" />
-              <span>
-                {user.username}
-                <span className="sr"> ({user.online ? 'online' : 'offline'})</span>
+              <span className="user-text">
+                <span className="user-name">{user.username}</span>
+                <span className="user-status">{user.online ? 'Online' : 'Offline'}</span>
               </span>
               {unread[user.id] > 0 && (
                 <span className="badge" data-testid="unread-badge">

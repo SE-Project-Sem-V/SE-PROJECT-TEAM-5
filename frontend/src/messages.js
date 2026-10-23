@@ -19,3 +19,9 @@ export function normalizeMessage(raw, defaults = {}) {
     timestamp: toIso(raw.timestamp) ?? defaults.timestamp ?? new Date().toISOString(),
   };
 }
+
+// Adds a message to a conversation unless one with the same id is already there.
+// Protects against duplicates after a reconnect (STP INT-07: no duplicate messages).
+export function appendUnique(list, message) {
+  return list.some((m) => m.id === message.id) ? list : [...list, message];
+}

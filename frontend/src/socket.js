@@ -3,7 +3,7 @@ import { API_URL, EVENTS, USE_MOCK, assertSecureTransport } from './config.js';
 import { normalizeMessage } from './messages.js';
 import { RECONNECT_OPTIONS, createReconnectManager } from './reconnectManager.js';
 
-// Returns { sendMessage(to, text) -> Promise<message>, disconnect() }.
+// Returns { sendMessage(to, text, clientId) -> Promise<message>, disconnect() }.
 // handlers: { onMessage(message), onStatus(status) }
 export function connectSocket(token, user, handlers) {
   return USE_MOCK ? mockConnection(user, handlers) : realConnection(token, user, handlers);
@@ -24,10 +24,11 @@ function realConnection(token, user, { onMessage, onStatus }) {
   socket.on(EVENTS.RECEIVE, (raw) => onMessage(normalizeMessage(raw)));
 
   return {
-    sendMessage: (to, text) =>
+    sendMessage: (to, text, clientId) =>
       new Promise((resolve, reject) => {
         // The client never sends a timestamp: the server sets it (CHAT-F-010).
-        socket.timeout(5000).emit(EVENTS.SEND, { to, text }, (err, res) => {
+        // clientId lets the server spot a retry of a message it already stored.
+        socket.timeout(5000).emit(EVENTS.SEND, { to, text, clientId }, (err, res) => {
           if (err) return reject(new Error('The server did not confirm the message. Try sending it again.'));
           if (res?.ok === false || res?.status === 'error') return reject(new Error(ackError(res)));
           return resolve(normalizeMessage(res?.message ?? res ?? {}, { from: user.id, to, content: text }));

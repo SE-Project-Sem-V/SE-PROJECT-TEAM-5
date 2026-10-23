@@ -3,6 +3,7 @@ import AuthScreen from './components/AuthScreen.jsx';
 import UserList from './components/UserList.jsx';
 import ChatWindow from './components/ChatWindow.jsx';
 import { logout } from './api.js';
+import { appendUnique } from './messages.js';
 import { connectSocket } from './socket.js';
 
 const SESSION_KEY = 'chat-session';
@@ -48,7 +49,7 @@ export default function App() {
     const conn = connectSocket(session.token, session.user, {
       onStatus: setStatus,
       onMessage: (msg) => {
-        setMessages((prev) => ({ ...prev, [msg.from]: [...(prev[msg.from] || []), msg] }));
+        setMessages((prev) => ({ ...prev, [msg.from]: appendUnique(prev[msg.from] || [], msg) }));
         if (peerRef.current?.id !== msg.from) {
           setUnread((prev) => ({ ...prev, [msg.from]: (prev[msg.from] || 0) + 1 }));
         }
@@ -88,7 +89,17 @@ export default function App() {
     }));
   }
 
-  async function handleSend(content) {
+  async function deliver(peerId, tempId, content) {
+    try {
+      // tempId doubles as clientId so the server can recognise a retry.
+      const saved = await connection.current.sendMessage(peerId, content, tempId);
+      patchMessage(peerId, tempId, { ...saved, state: 'sent', error: undefined });
+    } catch (err) {
+      patchMessage(peerId, tempId, { state: 'failed', error: err.message });
+    }
+  }
+
+  function handleSend(content) {
     const peerId = peer.id;
     const tempId = `tmp-${Date.now()}`;
     const pending = {
@@ -100,12 +111,12 @@ export default function App() {
       state: 'sending',
     };
     setMessages((prev) => ({ ...prev, [peerId]: [...(prev[peerId] || []), pending] }));
-    try {
-      const saved = await connection.current.sendMessage(peerId, content);
-      patchMessage(peerId, tempId, { ...saved, state: 'sent' });
-    } catch (err) {
-      patchMessage(peerId, tempId, { state: 'failed', error: err.message });
-    }
+    deliver(peerId, tempId, content);
+  }
+
+  function handleRetry(message) {
+    patchMessage(peer.id, message.id, { state: 'sending', error: undefined });
+    deliver(peer.id, message.id, message.content);
   }
 
   if (!session) return <AuthScreen onAuth={handleAuth} />;
@@ -134,11 +145,13 @@ export default function App() {
       </aside>
       <main className="main">
         <ChatWindow
+          key={peer?.id ?? 'none'}
           peer={peer}
           me={session.user}
           messages={peer ? messages[peer.id] || [] : []}
           status={status}
           onSend={handleSend}
+          onRetry={handleRetry}
         />
       </main>
     </div>

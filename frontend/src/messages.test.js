@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeMessage, toIso } from './messages.js';
+import { appendUnique, normalizeMessage, toIso } from './messages.js';
 
 describe('normalizeMessage', () => {
   it('maps the SAD payload fields (userId, text)', () => {
@@ -22,5 +22,15 @@ describe('toIso', () => {
     expect(toIso(1694250000000)).toBe(new Date(1694250000000).toISOString());
     expect(toIso('2026-10-23T10:00:00.000Z')).toBe('2026-10-23T10:00:00.000Z');
     expect(toIso('nonsense')).toBeUndefined();
+  });
+});
+
+describe('appendUnique', () => {
+  it('adds a new message and ignores one it already has', () => {
+    const first = { id: 'm1', content: 'hi' };
+    const list = appendUnique([], first);
+    expect(list).toHaveLength(1);
+    expect(appendUnique(list, { id: 'm1', content: 'hi again' })).toBe(list);
+    expect(appendUnique(list, { id: 'm2', content: 'next' })).toHaveLength(2);
   });
 });
