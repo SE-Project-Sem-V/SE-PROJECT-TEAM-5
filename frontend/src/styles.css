@@ -87,3 +87,10 @@ button, input { font: inherit; }
   .app { grid-template-columns: 1fr; grid-template-rows: 40vh 1fr; }
   .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
 }
+/* User search (CHATAPP-44) */
+.search { position: relative; }
+.search input { padding-right: 2.25rem; }
+.search-clear { position: absolute; top: 50%; right: 1.4rem; transform: translateY(-50%); padding: 0.2rem 0.4rem; border: 0; background: none; color: var(--muted); font-size: 1.2rem; line-height: 1; cursor: pointer; }
+.user-text { display: flex; flex-direction: column; min-width: 0; }
+.user-name { font-weight: 600; }
+.user-status { font-size: 0.8rem; color: var(--muted); }
