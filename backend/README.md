@@ -1,9 +1,10 @@
-# Backend database foundation (CHATAPP-38)
+# Backend database and credential security (CHATAPP-38 / CHATAPP-26)
 
 PostgreSQL infrastructure for users, rooms, membership and message persistence.
-The existing Express/Socket.IO scaffold and `/api/ping` remain independent of the
-database. This task does not implement authentication, search/history endpoints,
-presence, or message routing. `db:check` verifies database readiness separately.
+The server uses the existing PostgreSQL pool for timestamped Socket.IO messages.
+JWT WebSocket verification is implemented; registration/login and search/history
+endpoints are not. `/api/ping` is a liveness response; `db:check` verifies database
+readiness separately.
 
 ## Prerequisites
 
@@ -28,12 +29,13 @@ npm ci
 Edit the ignored `backend/.env` locally:
 
 - Set a private, nonempty `PGPASSWORD`; no password is supplied in this repository.
+- Set `JWT_SECRET` for server startup as described under credential security below.
 - Set `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER` for your personal database.
 - Keep `NODE_ENV=development`, `DB_SSL_MODE=disable` only on loopback development.
 - Set `DB_ALLOW_SEED=true` when you intentionally want development fixtures.
 - Set `TEST_PGDATABASE` to a **different** local database ending in `_test`.
 
-Scripts load `backend/.env` by absolute path; process environment variables take
+The server and database scripts load `backend/.env` by absolute path; process environment variables take
 precedence. `.env`, `.env.test`, npm caches, node_modules and generated logs are
 ignored. Never paste populated connection settings into Git, Jira or logs.
 There is no `DATABASE_URL` support: use the explicit PG* fields. `DATABASE_URL`,
@@ -135,10 +137,76 @@ when the data is first inserted.
 Each new seed user receives an independently salted Argon2id PHC hash using
 19 MiB memory, two iterations and parallelism one. Its password is random bytes
 generated in memory and then discarded. **Seed accounts have no known login
-password.** There is no plaintext fixture credential or password-verification API.
-CHATAPP-26 can later use the standard hash format with `argon2.verify` and create
-test logins through its own registration flow. Never replace an existing user's
-hash just to make a seed account accessible.
+password.** There is no plaintext fixture credential or registration/login API.
+CHATAPP-26 supplies shared Argon2id utilities; CHATAPP-7 must connect them to real
+registration/login. Never replace an existing user's hash just to make a seed
+account accessible. The database seed implementation remains unchanged.
+
+## Credential security (CHATAPP-26)
+
+`security/passwords.js` exports asynchronous `hashPassword(password)` and
+`verifyPassword(password, encodedHash)`. New hashes use Argon2id with 19 MiB memory,
+two iterations, parallelism one, a 32-byte digest and a fresh library-generated
+16-byte salt. The full encoded PHC string belongs in `users.password_hash`;
+there is no additional salt column or schema migration.
+
+Passwords must be nonempty, well-formed Unicode strings of at most 1,024 UTF-8
+bytes. Spaces, Unicode normalization and all other password characters are
+preserved exactly; nothing is trimmed, normalized or truncated. CHATAPP-7 may
+apply an agreed registration policy within this bound. Invalid hashing inputs
+raise a generic `PasswordInputError`. Verification returns false for invalid
+inputs, malformed/unsupported hashes, or a mismatch. Only pass encoded hashes
+retrieved from trusted storage to the verifier, never a client-supplied hash.
+Library failures are not logged or returned with credential data.
+
+The existing seed hash format is compatible with the verifier, but its discarded
+random passwords remain unknown. `bcryptjs` is currently unused and is retained
+to avoid an unrelated dependency change; bcrypt hashes are not accepted by these
+utilities. Coordinate any future legacy-hash support with the authentication owner.
+
+`security/config.js` validates `JWT_SECRET` both before startup creates a pool and
+inside `createChatServer()`. The key must contain at least 32 UTF-8 bytes, with no
+whitespace or repeated-character placeholder. These checks do not measure entropy:
+provision a key generated from **at least 32 cryptographically random bytes**, such
+as those bytes encoded into 64 hex characters, using a trusted secret-management
+tool. Keep the same private key across instances/restarts; there is no default,
+automatic key generation, trimming, or hashing of the signing key. Changing the key
+invalidates existing tokens and needs coordination with CHATAPP-24.
+
+Inject production JWT/database credentials from a secret manager. For local
+development, an ignored `.env` is still plaintext on disk: restrict its access and
+keep it out of source control, logs, screenshots and shared messages. Do not put
+secrets in frontend `VITE_*` settings. `.env.example` intentionally contains blank
+credential fields. User password hashing does not replace protecting the runtime
+JWT key or the database connection credential.
+
+The final HTTP middleware returns controlled JSON for malformed/oversized bodies,
+unsupported encodings and unexpected errors, and a generic 404 without echoing
+the requested URL. Error logs contain a fixed label and status only, never raw
+errors, request bodies, headers, cookies, query strings or credential fragments.
+Register future HTTP routes **above** the final handlers in `createChatServer()`.
+If headers are already sent, the response is closed without forwarding the raw
+error to Express's default logger. Keep verbose third-party request/debug logging
+disabled when handling credentials.
+
+### CHATAPP-7 handoff and TC-SEC-04 acceptance
+
+- Registration must call `hashPassword()` before a parameterized insert into
+  `users.password_hash`, and supply the required `display_name`.
+- Login must perform the agreed case-insensitive username lookup, then call
+  `verifyPassword(submittedPassword, storedHash)`. Use generic credential failures;
+  never fall back to plaintext comparison or a second in-memory user store.
+- Select public response fields explicitly. Never return/log password hashes or
+  submitted passwords, including on validation and database errors. The intended
+  login token response remains part of the authentication contract; signing keys
+  and database credentials must never be returned.
+- Tests here prove utility, configuration, error handling and storage behavior.
+  **TC-SEC-04 is not fully accepted until actual registration/login integration
+  tests inspect PostgreSQL rows and captured success/failure logs/responses.**
+
+CHATAPP-24 continues to own JWT issuance/verification policy coordination. This
+change preserves the existing WebSocket verifier and does not add an expiration
+requirement, algorithm allowlist, logout/revocation, or new authentication routes.
 
 ## Database model and integration contract
 
@@ -154,7 +222,7 @@ cascading away conversations. Keep departed membership records using `left_at`.
 There is no persisted `online` Boolean: connection state belongs to the presence
 module. There are no session tokens or JWT secrets in these tables.
 
-### Authentication and user directory handoff (CHATAPP-26 / CHATAPP-10)
+### Authentication and user directory handoff (CHATAPP-7 / CHATAPP-10)
 
 - Usernames contain 1-64 ASCII letters, digits or underscores. Store the chosen
   casing; normalize lookup input with `trim().toLowerCase()`. The database rejects
@@ -164,8 +232,9 @@ module. There are no session tokens or JWT secrets in these tables.
   username as a bound value. A pre-registration lookup is not a substitute for
   handling SQLSTATE `23505` during concurrent registration.
 - `password_hash` holds the complete encoded hash including parameters and salt.
-  Authentication owns input policy, hashing/verifying real passwords, JWTs and
-  logout/session revocation. Durable per-session revocation may require a later
+  Authentication owns input policy and invokes CHATAPP-26's shared hashing/verifying
+  utilities. Coordinate JWTs and logout/session revocation with CHATAPP-24.
+  Durable per-session revocation may require a later
   migration; these four tables do not provide it.
 - Search can use parameterized `ILIKE $1`, with `%`, `_` and backslash escaped for
   literal substring matching, and a bounded limit. The lowercase identity index
@@ -216,26 +285,39 @@ the messaging owner; CHATAPP-38 changes neither event names nor payload contract
 
 ## Tests and isolation
 
-`npm test` needs no PostgreSQL. It tests credential/config validation, mandatory
-verified TLS, test/seed safety gates, bounded real TCP connection failure and
-redaction of error details.
+`npm test` needs no PostgreSQL or configured JWT key. It runs configuration and
+credential-security tests: Argon2id salt/verification/input handling, JWT key
+validation/startup failures, real HTTP error redaction in development/production,
+WebSocket authentication/protected acknowledgements, sanitized message failure
+responses, mandatory verified TLS, test/seed safety gates and bounded TCP failures.
+Tests generate ephemeral credentials in memory and keep them out of diagnostics.
 
 `npm run test:db` requires a running **local** PostgreSQL instance, role/password
 configuration, and a separate pre-created `TEST_PGDATABASE` ending in `_test`.
 It deliberately exits nonzero if prerequisites are missing; it never silently
 substitutes mocks or uses `PGDATABASE`.
 
-The suite checks the actual target name, creates a random `chatapp_test_<uuid>`
-schema, sets an exclusive search path and drops only that schema afterward. It
+This command runs **both** `test/database.test.js` and
+`test/message-handler.test.js`. The messaging suite generates its own temporary
+signing key; it does not need a deployment `JWT_SECRET`.
+
+Each suite checks the actual target name, creates a random `chatapp_test_<uuid>`
+or `chatapp_message_test_<uuid>` schema, sets an exclusive search path and drops
+only its own schema afterward. The database suite
 tests connectivity, real migrations/concurrent migration runs, checksum tampering,
 DDL rollback, repeatable/concurrent seeds, preserved data/hashes, PK/FK/username
 constraints, lookup/search queries, memberships, message insertion/history,
 timestamps, concurrent deduplication, profile updates and transaction rollback.
 It reconnects through a new pool to verify data survives connection teardown.
+The credential storage test inserts only an Argon2id hash, retrieves it through
+a new connection, verifies correct/wrong passwords and checks a public-field
+projection. The messaging suite checks persistence, database-generated timestamps,
+delivery/acknowledgement payloads, retries and rejected message operations.
 Database-server restart durability is a separate manual check below.
 
 `.github/workflows/backend-db-ci.yml` starts disposable PostgreSQL 18 with a random
-masked password, runs both suites, then removes its test container and volume.
+masked password, runs `npm test` and `npm run test:db` (including messaging), then
+removes its test container and volume.
 The existing frontend workflow is unchanged. CI is configured here, but is only
 proven after its workflow actually runs.
 

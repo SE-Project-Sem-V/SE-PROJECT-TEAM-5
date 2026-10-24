@@ -1,13 +1,16 @@
 
 const express = require("express");
 const http = require("node:http");
+const path = require("node:path");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const { Server } = require("socket.io");
-require("dotenv").config();
+require("dotenv").config({ path: path.join(__dirname, ".env"), quiet: true });
 
 const { createPool, withTransaction } = require("./db/pool");
 const { formatDatabaseError } = require("./db/config");
+const { validateJwtSecret, SecurityConfigurationError, JWT_SECRET_ERROR } = require("./security/config");
+const { createHttpErrorHandler, notFound } = require("./middleware/error-handler");
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -133,9 +136,7 @@ function createChatServer({
     throw new Error("A PostgreSQL pool is required.");
   }
 
-  if (!jwtSecret) {
-    throw new Error("JWT_SECRET is required.");
-  }
+  validateJwtSecret(jwtSecret);
 
   const app = express();
   const server = http.createServer(app);
@@ -157,6 +158,10 @@ function createChatServer({
       service: "chat-backend",
     });
   });
+
+  // Register future HTTP routes above these final response/error handlers.
+  app.use(notFound);
+  app.use(createHttpErrorHandler(logger));
 
   io.use((socket, next) => {
     const token = socket.handshake.auth?.token;
@@ -290,11 +295,7 @@ function createChatServer({
 }
 
 async function main() {
-  const jwtSecret = process.env.JWT_SECRET;
-
-  if (!jwtSecret) {
-    throw new Error("JWT_SECRET is required in backend/.env");
-  }
+  const jwtSecret = validateJwtSecret(process.env.JWT_SECRET);
 
   const pool = createPool();
   const chat = createChatServer({ pool, jwtSecret });
@@ -334,7 +335,8 @@ async function main() {
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error("Chat backend failed to start:", formatDatabaseError(error));
+    console.error("Chat backend failed to start:",
+      error instanceof SecurityConfigurationError ? JWT_SECRET_ERROR : formatDatabaseError(error));
     process.exitCode = 1;
   });
 }
