@@ -1,5 +1,5 @@
 const assert = require("node:assert/strict");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, randomBytes } = require("node:crypto");
 const path = require("node:path");
 const test = require("node:test");
 const { Pool } = require("pg");
@@ -9,6 +9,7 @@ const { databaseConfig, DatabaseSetupError, formatDatabaseError, testDatabaseEnv
 const { createPool, withTransaction } = require("../db/pool");
 const { migrate, readMigrations } = require("../db/migrate");
 const { seed, USERS, DIRECT_ROOM, GROUP_ROOM } = require("../db/seed");
+const { hashPassword, verifyPassword } = require("../security/passwords");
 
 test("real PostgreSQL integration (separate local *_test database required)", { timeout: 60000 }, async (t) => {
   let env;
@@ -104,6 +105,32 @@ test("real PostgreSQL integration (separate local *_test database required)", { 
       await rejectCode(pool.query(insert, [randomUUID(), username, "Other", USERS[0][0]]), "23514");
     }
     await rejectCode(pool.query("INSERT INTO users (username, password_hash, display_name) VALUES ($1, NULL, $2)", ["null_hash", "Other"]), "23502");
+  });
+
+  await t.test("stores only an Argon2id hash and verifies it after reconnecting", async () => {
+    const password = randomBytes(32).toString("base64url");
+    const hash = await hashPassword(password);
+    const userId = randomUUID();
+    const fresh = new Pool({ ...databaseConfig(env), options: `-c search_path=${schema}` });
+    fresh.on("error", () => {});
+    try {
+      await pool.query("INSERT INTO users (id, username, password_hash, display_name) VALUES ($1, $2, $3, $4)",
+        [userId, "security_round_trip", hash, "Security test"]);
+      const { rows: [stored] } = await fresh.query("SELECT password_hash FROM users WHERE id = $1", [userId]);
+      // Boolean assertions keep passwords/hashes out of failure diagnostics.
+      assert.ok(stored.password_hash === hash);
+      assert.ok(stored.password_hash !== password && !stored.password_hash.includes(password));
+      assert.ok(await verifyPassword(password, stored.password_hash));
+      assert.equal(await verifyPassword(randomBytes(32).toString("base64url"), stored.password_hash), false);
+      const { rows: [publicUser] } = await fresh.query("SELECT id, username, display_name FROM users WHERE id = $1", [userId]);
+      assert.equal(Object.hasOwn(publicUser, "password_hash"), false);
+      assert.equal(JSON.stringify(publicUser).includes(password), false);
+    } catch (error) {
+      if (error.code === "ERR_ASSERTION") throw error;
+      throw new Error(formatDatabaseError(error));
+    } finally {
+      await fresh.end();
+    }
   });
 
   await t.test("supports case-insensitive lookup and parameterized substring search without exposing hashes", async () => {
