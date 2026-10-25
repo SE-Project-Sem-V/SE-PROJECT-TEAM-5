@@ -9,8 +9,8 @@
     "db:migrate": "node scripts/db.js migrate",
     "db:seed": "node scripts/db.js seed",
     "db:check": "node scripts/db.js check",
-    "test": "node --test test/config.test.js test/credential-security.test.js",
-    "test:db": "node --test test/database.test.js test/message-handler.test.js"
+    "test": "node --test test/config.test.js test/credential-security.test.js test/user-search.test.js",
+    "test:db": "node --test test/database.test.js test/message-handler.test.js test/user-search.database.test.js"
   },
   "keywords": [],
   "author": "",

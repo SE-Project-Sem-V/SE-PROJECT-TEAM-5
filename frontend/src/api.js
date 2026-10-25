@@ -74,15 +74,16 @@ export async function logout(token) {
 }
 
 function normalizeUser(u) {
-  return { id: String(u.id ?? u.userId), username: u.username, online: Boolean(u.online) };
+  return { id: String(u.id ?? u.userId), username: u.username, online: typeof u.online === 'boolean' ? u.online : null };
 }
 
 export async function searchUsers(query, token) {
+  const q = query.trim();
   if (USE_MOCK) {
     await wait(150);
-    const q = query.toLowerCase();
-    return MOCK_USERS.filter((u) => u.username.includes(q));
+    if (!q) return [];
+    return MOCK_USERS.filter((u) => u.username.includes(q.toLowerCase()));
   }
-  const data = await request(`/api/users?q=${encodeURIComponent(query)}`, { token });
+  const data = await request(`/api/users?q=${encodeURIComponent(q)}`, { token });
   return (Array.isArray(data) ? data : data.users || []).map(normalizeUser);
 }

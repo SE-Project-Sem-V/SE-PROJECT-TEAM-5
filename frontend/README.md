@@ -8,7 +8,13 @@ npm install
 npm run dev              # http://localhost:5173
 ```
 Mock mode lets you log in with any username and chat with fake users (alice, bob, charlie) without a backend.
-Set `VITE_USE_MOCK=false` in `.env` once the backend is running.
+Set `VITE_USE_MOCK=false` and `VITE_API_URL=http://localhost:5000` in the ignored
+local `.env` for real APIs. The URL is configurable for other ports and HTTPS
+deployments; the local fallback also uses port 5000. Restart Vite after editing
+environment settings. Never put backend credentials or signing keys in `VITE_*`.
+CHATAPP-7 registration/login is still needed to obtain a real session through the
+UI; mock session tokens are not accepted by the backend. Keep mock mode for UI
+development until that integration is available.
 
 ## Checks (also run by CI)
 ```bash
@@ -22,8 +28,9 @@ REST
 - `POST /api/auth/login` (SAD): body `{ username, password }`, response `{ status: "ok", token, userId }`. Errors: 401 invalid credentials, 400 bad request.
 - `POST /api/auth/register` (assumed): same body. Response either the same as login, or just `{ status: "ok" }` (the UI then logs in).
 - `POST /api/auth/logout` (assumed): header `Authorization: Bearer <token>`. Must invalidate the session and its socket (CHAT-F-002).
-- `GET /api/users?q=text` (assumed): header `Authorization: Bearer <token>`, response `[{ id, username, online }]`.
-- Error bodies: `{ error: "message" }` or `{ error: { code, message } }`. The UI shows the message text.
+- `GET /api/users?q=text` (CHATAPP-10): header `Authorization: Bearer <token>`, response `{ users: [{ id, username }] }`. Case-insensitive literal username substring search, trimmed query of at most 64 characters, at most 20 results sorted by lowercase username then ID. The caller is excluded. Empty/no-match queries return `{ users: [] }`; arrays, repeated parameters, malformed encoding, control characters and extra parameters are rejected. No pagination or display-name search is implemented.
+- Presence is unavailable from this endpoint. The adapter represents it as `online: null` and the list displays "Presence unavailable" without an offline indicator. Explicit mock/presence booleans still display Online/Offline. Selecting a result continues opening the existing chat panel; it does not create a direct room (CHATAPP-11).
+- Search errors: 400 invalid query, 401 missing/invalid authentication or nonexistent caller, 500 database/server failure, with `{ status: "error", message: "controlled message" }`. The adapter also retains `{ error: "message" }` and `{ error: { code, message } }` compatibility. The list keeps its generic error state.
 
 Socket.IO
 - The JWT is sent in the handshake: `auth: { token }` (SAD flow 1).

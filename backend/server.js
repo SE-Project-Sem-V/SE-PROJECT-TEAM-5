@@ -11,6 +11,7 @@ const { createPool, withTransaction } = require("./db/pool");
 const { formatDatabaseError } = require("./db/config");
 const { validateJwtSecret, SecurityConfigurationError, JWT_SECRET_ERROR } = require("./security/config");
 const { createHttpErrorHandler, notFound } = require("./middleware/error-handler");
+const { createUsersRouter } = require("./routes/users");
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -158,6 +159,8 @@ function createChatServer({
       service: "chat-backend",
     });
   });
+
+  app.use("/api/users", createUsersRouter({ pool, jwtSecret }));
 
   // Register future HTTP routes above these final response/error handlers.
   app.use(notFound);
