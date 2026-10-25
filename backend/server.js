@@ -6,6 +6,7 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const { Server } = require("socket.io");
 require("dotenv").config({ path: path.join(__dirname, ".env"), quiet: true });
+const { createAuthRouter } = require("./routes/auth");
 
 const { createPool, withTransaction } = require("./db/pool");
 const { formatDatabaseError } = require("./db/config");
@@ -143,6 +144,7 @@ function createChatServer({
 
   app.use(cors());
   app.use(express.json());
+  app.use("/api/auth", createAuthRouter({ pool, jwtSecret }));
 
   const io = new Server(server, {
     cors: {
