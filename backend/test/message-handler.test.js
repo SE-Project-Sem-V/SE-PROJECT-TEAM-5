@@ -186,6 +186,20 @@ test(
         assert.equal(count.count, 1);
       });
 
+      await t.test(
+        "acknowledges invalid message payloads with an error",
+        async () => {
+          const response = await sendMessage(alice, {
+            to: USERS[1][0],
+            text: "   ",
+            clientId: `invalid-${randomUUID()}`,
+          });
+
+          assert.equal(response.ok, false);
+          assert.match(response.error, /message must contain text/i);
+        },
+      );
+
       await t.test("rejects a nonexistent recipient", async () => {
         const response = await sendMessage(alice, {
           to: randomUUID(),
