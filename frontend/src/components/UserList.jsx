@@ -34,6 +34,7 @@ export default function UserList({ token, meId, selectedId, unread, onSelect }) 
           placeholder="Search users"
           aria-label="Search users"
           data-testid="user-search"
+          maxLength={64}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -62,7 +63,7 @@ export default function UserList({ token, meId, selectedId, unread, onSelect }) 
       )}
       {state === 'ready' && users.length === 0 && (
         <p className="note" data-testid="no-users">
-          {query.trim() ? `No users match “${query.trim()}”.` : 'No other users yet.'}
+          {query.trim() ? `No users match “${query.trim()}”.` : 'Enter a username to find someone.'}
         </p>
       )}
 
@@ -77,10 +78,12 @@ export default function UserList({ token, meId, selectedId, unread, onSelect }) 
               data-username={user.username}
               onClick={() => onSelect(user)}
             >
-              <span className={`dot ${user.online ? 'on' : ''}`} aria-hidden="true" />
+              {typeof user.online === 'boolean' && (
+                <span className={`dot ${user.online ? 'on' : ''}`} aria-hidden="true" />
+              )}
               <span className="user-text">
                 <span className="user-name">{user.username}</span>
-                <span className="user-status">{user.online ? 'Online' : 'Offline'}</span>
+                <span className="user-status">{typeof user.online === 'boolean' ? (user.online ? 'Online' : 'Offline') : 'Presence unavailable'}</span>
               </span>
               {unread[user.id] > 0 && (
                 <span className="badge" data-testid="unread-badge">

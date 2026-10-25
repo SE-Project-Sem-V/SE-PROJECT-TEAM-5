@@ -1,9 +1,9 @@
-# Backend database and credential security (CHATAPP-38 / CHATAPP-26)
+# Backend database, credential security and user search (CHATAPP-38 / CHATAPP-26 / CHATAPP-10)
 
 PostgreSQL infrastructure for users, rooms, membership and message persistence.
 The server uses the existing PostgreSQL pool for timestamped Socket.IO messages.
-JWT WebSocket verification is implemented; registration/login and search/history
-endpoints are not. `/api/ping` is a liveness response; `db:check` verifies database
+JWT WebSocket verification and authenticated user search are implemented;
+registration/login and history endpoints are not. `/api/ping` is a liveness response; `db:check` verifies database
 readiness separately.
 
 ## Prerequisites
@@ -236,10 +236,56 @@ module. There are no session tokens or JWT secrets in these tables.
   utilities. Coordinate JWTs and logout/session revocation with CHATAPP-24.
   Durable per-session revocation may require a later
   migration; these four tables do not provide it.
-- Search can use parameterized `ILIKE $1`, with `%`, `_` and backslash escaped for
-  literal substring matching, and a bounded limit. The lowercase identity index
-  does not accelerate arbitrary substring searches. Select only public fields
-  and add live `online` from presence to return `{ id, username, online }`.
+- Search uses parameterized `ILIKE` with an explicit `!` escape character: `!`,
+  `%` and `_` are escaped, and backslash is literal. The lowercase identity index
+  does not accelerate arbitrary substring searches. Return only public fields;
+  presence integration must supply real connection state before adding `online`.
+
+## User search (CHATAPP-10 / CHAT-F-005)
+
+`GET /api/users?q=ali` requires `Authorization: Bearer <session-token>` and returns:
+
+```json
+{"users":[{"id":"10000000-0000-4000-8000-000000000002","username":"Alina"}]}
+```
+
+The example is illustrative. Results come from registered PostgreSQL users,
+exclude the authenticated caller, and contain only `id` and `username`. Missing,
+empty or whitespace-only `q`, and queries with no matches, return HTTP 200 with
+`{"users":[]}` (TC-SEARCH-02). Selection remains a frontend action that opens the
+existing chat panel. Search creates no rooms, memberships or messages.
+
+The endpoint trims whitespace and accepts a single `q` of at most 64 JavaScript
+string code units, matching the frontend input limit. Matching is a case-insensitive
+literal substring of `username`, not `display_name`. Internal ASCII control
+characters, malformed percent/UTF-8 encoding, repeated/structured `q` and unknown
+parameters are rejected with 400. Results are ordered by lowercase username using
+the C collation, then UUID, with a fixed limit of 20. Refine the query for more
+specific results; there is no pagination. The query, caller UUID and limit are
+bound parameters, and the response explicitly projects public fields.
+
+`middleware/require-auth.js` protects HTTP requests independently of Socket.IO.
+It accepts exactly one Bearer authorization header, verifies an HS256 signature
+(the project's default signing algorithm), and checks `exp`/`nbf` when present.
+It requires a UUID `sub` and checks the account exists on every request, using
+the database's canonical UUID as the caller identity. It never accepts a caller
+ID or token from query parameters. There is no token issuance or logout/revocation
+implementation here. CHATAPP-7/24 must issue expiring tokens with the same private
+key and UUID subject and coordinate any future algorithm/revocation policy.
+The existing WebSocket verifier is unchanged.
+
+Authentication failures use HTTP 401, `WWW-Authenticate: Bearer`, and
+`{"status":"error","message":"Authentication required."}`. Invalid input uses
+400 with a fixed validation message. Database/unexpected failures flow through
+CHATAPP-26's final handler and return 500 with `Internal server error.`; logs contain
+only its fixed label/status. Directory responses and errors use `Cache-Control:
+no-store`. Tokens, hashes, credentials and private profile fields are never returned.
+
+No online status is inferred from database records. The frontend treats missing
+presence as unknown and displays "Presence unavailable". CHATAPP-7 is still needed
+for real registration/login through the UI; mock tokens cannot access this endpoint.
+CHATAPP-11 owns creating/reusing direct rooms and memberships before sending to a
+new recipient. Existing messaging still requires a direct room with active members.
 
 ### Rooms and messaging handoff
 
@@ -278,18 +324,21 @@ module. There are no session tokens or JWT secrets in these tables.
   guarantee. Retention, rejoin/previous-history access, and durable unread state
   need later feature decisions/migrations.
 
-The frontend defaults to port 3000; the server defaults to 5000. Its owner must
-set `VITE_API_URL` appropriately when real APIs exist. Keep mock mode enabled until
-those features are implemented. Agree `newMessage` versus `receiveMessage` with
-the messaging owner; CHATAPP-38 changes neither event names nor payload contracts.
+The frontend's `.env.example` and local fallback use port 5000, matching the
+server default. Set `VITE_API_URL` in the ignored frontend `.env` for a different
+backend port or HTTPS deployment, and restart Vite. Older local configurations
+pointing to port 3000 must be updated privately. Keep mock mode enabled until
+CHATAPP-7 provides real login. CHATAPP-10 changes no socket event or message contract.
 
 ## Tests and isolation
 
-`npm test` needs no PostgreSQL or configured JWT key. It runs configuration and
-credential-security tests: Argon2id salt/verification/input handling, JWT key
+`npm test` needs no PostgreSQL or configured JWT key. It runs configuration,
+credential-security and user-search HTTP tests: Argon2id salt/verification/input handling, JWT key
 validation/startup failures, real HTTP error redaction in development/production,
 WebSocket authentication/protected acknowledgements, sanitized message failure
 responses, mandatory verified TLS, test/seed safety gates and bounded TCP failures.
+Search tests cover bearer authentication/subjects, malformed query parameters,
+bounded input, literal wildcard escaping, public fields and safe failure responses.
 Tests generate ephemeral credentials in memory and keep them out of diagnostics.
 
 `npm run test:db` requires a running **local** PostgreSQL instance, role/password
@@ -297,12 +346,12 @@ configuration, and a separate pre-created `TEST_PGDATABASE` ending in `_test`.
 It deliberately exits nonzero if prerequisites are missing; it never silently
 substitutes mocks or uses `PGDATABASE`.
 
-This command runs **both** `test/database.test.js` and
-`test/message-handler.test.js`. The messaging suite generates its own temporary
-signing key; it does not need a deployment `JWT_SECRET`.
+This command runs `test/database.test.js`, `test/message-handler.test.js`, and
+`test/user-search.database.test.js`. HTTP and messaging tests generate temporary
+signing keys; they do not need a deployment `JWT_SECRET`.
 
 Each suite checks the actual target name, creates a random `chatapp_test_<uuid>`
-or `chatapp_message_test_<uuid>` schema, sets an exclusive search path and drops
+or `chatapp_message_test_<uuid>` or `chatapp_search_test_<uuid>` schema, sets an exclusive search path and drops
 only its own schema afterward. The database suite
 tests connectivity, real migrations/concurrent migration runs, checksum tampering,
 DDL rollback, repeatable/concurrent seeds, preserved data/hashes, PK/FK/username
@@ -313,6 +362,11 @@ The credential storage test inserts only an Argon2id hash, retrieves it through
 a new connection, verifies correct/wrong passwords and checks a public-field
 projection. The messaging suite checks persistence, database-generated timestamps,
 delivery/acknowledgement payloads, retries and rejected message operations.
+The search suite exercises real HTTP requests against migrated PostgreSQL fixtures:
+case-insensitive partial matching, caller exclusion, empty/no-match results,
+literal wildcard and SQL-injection inputs, account existence, public-field
+projection, deterministic ordering and the 20-result cap. It creates/deletes only
+its own temporary fixture data and schema, never development or shared records.
 Database-server restart durability is a separate manual check below.
 
 `.github/workflows/backend-db-ci.yml` starts disposable PostgreSQL 18 with a random
@@ -346,5 +400,6 @@ not claim their APIs or acceptance flows are complete.
 
 Coordinate package/lockfile merges and migration numbering with Anand and the
 other developers. Do not overwrite an applied migration or introduce a second
-user store/connection pool. This branch changes no frontend, auth routes, Socket.IO
-handlers, Jira state or Git publication state.
+user store/connection pool. User search adds HTTP authentication and small frontend
+adapter/list changes without altering registration/login, Socket.IO handlers,
+schema migrations or room/message creation behavior.

@@ -1,5 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { assertSecureTransport } from './config.js';
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.resetModules();
+});
+
+describe('API endpoint configuration', () => {
+  it('defaults to the local backend port when no URL is configured', async () => {
+    vi.stubEnv('VITE_API_URL', '');
+    vi.resetModules();
+    expect((await import('./config.js')).API_URL).toBe('http://localhost:5000');
+  });
+
+  it('honors an explicit deployment URL', async () => {
+    vi.stubEnv('VITE_API_URL', 'https://chat.example.com/');
+    vi.resetModules();
+    expect((await import('./config.js')).API_URL).toBe('https://chat.example.com');
+  });
+});
 
 describe('assertSecureTransport (PRJ-SR-001)', () => {
   it('allows plain http on localhost', () => {

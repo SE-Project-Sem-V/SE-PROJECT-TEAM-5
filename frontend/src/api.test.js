@@ -22,6 +22,11 @@ describe('mock api', () => {
     expect(users.map((u) => u.username)).toEqual(['alice']);
   });
 
+  it('matches trimmed mixed-case text and leaves empty searches empty', async () => {
+    expect((await searchUsers(' ALI ', 'token')).map((u) => u.username)).toEqual(['alice']);
+    expect(await searchUsers('   ', 'token')).toEqual([]);
+  });
+
   it('logs out without error', async () => {
     await expect(logout('token')).resolves.toBeUndefined();
   });
