@@ -11,7 +11,7 @@ function formatTime(iso) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-export default function ChatWindow({ peer, me, messages, status, onSend, onRetry }) {
+export default function ChatWindow({ peer, me, messages, status, onSend, onRetry, onBack }) {
   const [text, setText] = useState('');
   const endRef = useRef(null);
 
@@ -19,10 +19,19 @@ export default function ChatWindow({ peer, me, messages, status, onSend, onRetry
     endRef.current?.scrollIntoView?.({ behavior: 'smooth' });
   }, [messages.length]);
 
+  // First-time guidance (CHAT-NF-005: a new user should not need instructions).
   if (!peer) {
     return (
-      <div className="empty">
-        <p>Pick someone from the list to start a chat.</p>
+      <div className="empty" data-testid="empty-state">
+        <div>
+          <h2>Hi, {me.username}</h2>
+          <p>Start a conversation in three steps:</p>
+          <ol className="steps">
+            <li>Search for a user in the list.</li>
+            <li>Click their name to open the chat.</li>
+            <li>Type your message and press Enter.</li>
+          </ol>
+        </div>
       </div>
     );
   }
@@ -40,7 +49,12 @@ export default function ChatWindow({ peer, me, messages, status, onSend, onRetry
 
   return (
     <>
-      <header className="chat-head">{peer.username}</header>
+      <header className="chat-head">
+        <button type="button" className="back" onClick={onBack} aria-label="Back to users" data-testid="back-button">
+          ←
+        </button>
+        <span>{peer.username}</span>
+      </header>
       {offline && (
         <div className="banner" role="status" data-testid="connection-banner">
           {BANNERS[status]}
@@ -85,6 +99,7 @@ export default function ChatWindow({ peer, me, messages, status, onSend, onRetry
           placeholder={offline ? 'Waiting for connection…' : `Message ${peer.username}`}
           aria-label="Message"
           data-testid="message-input"
+          autoFocus
         />
         {left <= MAX_MESSAGE_LENGTH * 0.1 && <span className="count">{left} left</span>}
         <button className="btn" type="submit" disabled={offline || !text.trim()} data-testid="send-button">
