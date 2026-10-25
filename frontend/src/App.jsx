@@ -6,6 +6,7 @@ import { logout } from './api.js';
 import { appendUnique } from './messages.js';
 import { connectSocket } from './socket.js';
 
+const APP_TITLE = 'Team 5 Chat';
 const SESSION_KEY = 'chat-session';
 const STATUS_LABEL = {
   connecting: 'Connecting…',
@@ -37,12 +38,39 @@ export default function App() {
   const [messages, setMessages] = useState({}); // { [peerId]: [message] }
   const [unread, setUnread] = useState({}); // { [peerId]: count }
   const [status, setStatus] = useState('connecting');
+  const [notice, setNotice] = useState(null); // { kind: 'ok' | 'warn', text }
   const connection = useRef(null);
   const peerRef = useRef(null);
+  const prevStatus = useRef('connecting');
 
   useEffect(() => {
     peerRef.current = peer;
   }, [peer]);
+
+  // Show the number of unread messages in the browser tab title.
+  useEffect(() => {
+    const total = Object.values(unread).reduce((sum, n) => sum + n, 0);
+    document.title = total > 0 ? `(${total}) ${APP_TITLE}` : APP_TITLE;
+  }, [unread]);
+
+  // Short pop-up when the connection is lost or comes back (SAD 4.5). The banner in the chat stays until it is fixed.
+  useEffect(() => {
+    const previous = prevStatus.current;
+    prevStatus.current = status;
+    if (status === 'connected' && (previous === 'reconnecting' || previous === 'disconnected')) {
+      setNotice({ kind: 'ok', text: 'You are back online.' });
+    } else if (status === 'reconnecting' && previous === 'connected') {
+      setNotice({ kind: 'warn', text: 'Connection lost. Trying to reconnect…' });
+    } else if (status === 'disconnected') {
+      setNotice({ kind: 'warn', text: 'The server closed your connection. Log out and log in again.' });
+    }
+  }, [status]);
+
+  useEffect(() => {
+    if (!notice) return undefined;
+    const timer = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(timer);
+  }, [notice]);
 
   useEffect(() => {
     if (!session) return undefined;
@@ -75,6 +103,7 @@ export default function App() {
     setPeer(null);
     setMessages({});
     setUnread({});
+    setNotice(null);
   }
 
   function handleSelect(user) {
@@ -122,7 +151,7 @@ export default function App() {
   if (!session) return <AuthScreen onAuth={handleAuth} />;
 
   return (
-    <div className="app">
+    <div className={`app ${peer ? 'has-peer' : ''}`}>
       <aside className="sidebar">
         <header className="me">
           <div>
@@ -152,8 +181,14 @@ export default function App() {
           status={status}
           onSend={handleSend}
           onRetry={handleRetry}
+          onBack={() => setPeer(null)}
         />
       </main>
+      {notice && (
+        <div className={`toast toast-${notice.kind}`} role="status" data-testid="toast">
+          {notice.text}
+        </div>
+      )}
     </div>
   );
 }
