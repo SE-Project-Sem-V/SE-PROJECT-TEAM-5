@@ -1,6 +1,6 @@
 
 const assert = require("node:assert/strict");
-const { randomUUID } = require("node:crypto");
+const { randomUUID, randomBytes } = require("node:crypto");
 const http = require("node:http");
 const path = require("node:path");
 const test = require("node:test");
@@ -100,8 +100,8 @@ test(
       await migrate(pool);
       await seed(pool, { ...env, DB_ALLOW_SEED: "true" });
 
-      const jwtSecret = process.env.JWT_SECRET;
-      assert.ok(jwtSecret, "JWT_SECRET must be configured");
+      // Test tokens use an ephemeral key, independent of deployment credentials.
+      const jwtSecret = randomBytes(32).toString("hex");
 
       chat = createChatServer({
         pool,
