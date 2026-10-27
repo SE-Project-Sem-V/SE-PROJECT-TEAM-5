@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { searchUsers } from '../api.js';
 
-export default function UserList({ token, meId, selectedId, unread, onSelect }) {
+export default function UserList({ token, meId, selectedId, unread, onSelect, presence = {}, refreshKey = 0 }) {
   const [query, setQuery] = useState('');
   const [users, setUsers] = useState([]);
   const [state, setState] = useState('loading'); // loading | ready | error
@@ -24,7 +24,11 @@ export default function UserList({ token, meId, selectedId, unread, onSelect }) 
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [query, token, meId]);
+  }, [query, token, meId, refreshKey]);
+
+  // Live presence updates override what the last search returned.
+  // If neither is known, `online` stays undefined and the list says "Presence unavailable".
+  const shown = users.map((u) => ({ ...u, online: presence[u.id] ?? u.online }));
 
   return (
     <>
@@ -68,7 +72,7 @@ export default function UserList({ token, meId, selectedId, unread, onSelect }) 
       )}
 
       <ul className="users">
-        {users.map((user) => (
+        {shown.map((user) => (
           <li key={user.id}>
             <button
               type="button"
@@ -82,8 +86,10 @@ export default function UserList({ token, meId, selectedId, unread, onSelect }) 
                 <span className={`dot ${user.online ? 'on' : ''}`} aria-hidden="true" />
               )}
               <span className="user-text">
-                <span className="user-name">{user.username}</span>
-                <span className="user-status">{typeof user.online === 'boolean' ? (user.online ? 'Online' : 'Offline') : 'Presence unavailable'}</span>
+                <span className="user-name">{user.displayName || user.username}</span>
+                <span className="user-status">
+                  {typeof user.online === 'boolean' ? (user.online ? 'Online' : 'Offline') : 'Presence unavailable'}
+                </span>
               </span>
               {unread[user.id] > 0 && (
                 <span className="badge" data-testid="unread-badge">

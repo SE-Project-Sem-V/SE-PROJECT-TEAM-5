@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appendUnique, normalizeMessage, toIso } from './messages.js';
+import { appendUnique, normalizeMessage, normalizePresence, toIso } from './messages.js';
 
 describe('normalizeMessage', () => {
   it('maps the SAD payload fields (userId, text)', () => {
@@ -32,5 +32,13 @@ describe('appendUnique', () => {
     expect(list).toHaveLength(1);
     expect(appendUnique(list, { id: 'm1', content: 'hi again' })).toBe(list);
     expect(appendUnique(list, { id: 'm2', content: 'next' })).toHaveLength(2);
+  });
+});
+
+describe('normalizePresence', () => {
+  it('reads online and offline updates in the common shapes', () => {
+    expect(normalizePresence({ userId: 7, online: true })).toEqual({ userId: '7', online: true });
+    expect(normalizePresence({ id: 'u2', status: 'offline' })).toEqual({ userId: 'u2', online: false });
+    expect(normalizePresence({})).toBeNull();
   });
 });
