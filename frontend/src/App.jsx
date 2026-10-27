@@ -3,7 +3,8 @@ import AuthScreen from './components/AuthScreen.jsx';
 import UserList from './components/UserList.jsx';
 import ChatWindow from './components/ChatWindow.jsx';
 import { logout } from './api.js';
-import { appendUnique } from './messages.js';
+import { fetchHistory } from './history.js';
+import { appendUnique, mergeHistory } from './messages.js';
 import { connectSocket } from './socket.js';
 
 const APP_TITLE = 'Team 5 Chat';
@@ -40,6 +41,7 @@ export default function App() {
   const [status, setStatus] = useState('connecting');
   const [presence, setPresence] = useState({}); // { [userId]: true | false }
   const [refreshKey, setRefreshKey] = useState(0);
+  const [historyState, setHistoryState] = useState({}); // { [peerId]: 'loading' | 'loaded' | 'error' }
   const [notice, setNotice] = useState(null); // { kind: 'ok' | 'warn', text }
   const connection = useRef(null);
   const peerRef = useRef(null);
@@ -61,6 +63,8 @@ export default function App() {
     prevStatus.current = status;
     if (status === 'connected' && (previous === 'reconnecting' || previous === 'disconnected')) {
       setNotice({ kind: 'ok', text: 'You are back online.' });
+      // Fill in anything that arrived while the connection was down.
+      if (peerRef.current) loadHistory(peerRef.current.id);
     } else if (status === 'reconnecting' && previous === 'connected') {
       setNotice({ kind: 'warn', text: 'Connection lost. Trying to reconnect…' });
     } else if (status === 'disconnected') {
@@ -114,12 +118,27 @@ export default function App() {
     setPeer(null);
     setMessages({});
     setUnread({});
+    setHistoryState({});
     setNotice(null);
+  }
+
+  // CHAT-F-011: load recent messages for a conversation and merge them with what is already on screen.
+  async function loadHistory(peerId) {
+    setHistoryState((prev) => ({ ...prev, [peerId]: 'loading' }));
+    try {
+      const history = await fetchHistory(peerId, session.token, session.user.id);
+      setMessages((prev) => ({ ...prev, [peerId]: mergeHistory(history, prev[peerId] || []) }));
+      setHistoryState((prev) => ({ ...prev, [peerId]: 'loaded' }));
+    } catch {
+      setHistoryState((prev) => ({ ...prev, [peerId]: 'error' }));
+    }
   }
 
   function handleSelect(user) {
     setPeer(user);
     setUnread((prev) => ({ ...prev, [user.id]: 0 }));
+    const state = historyState[user.id];
+    if (!state || state === 'error') loadHistory(user.id);
   }
 
   function patchMessage(peerId, id, patch) {
@@ -195,6 +214,8 @@ export default function App() {
           onSend={handleSend}
           onRetry={handleRetry}
           onBack={() => setPeer(null)}
+          historyState={peer ? historyState[peer.id] : undefined}
+          onReloadHistory={() => loadHistory(peer.id)}
         />
       </main>
       {notice && (

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { MAX_MESSAGE_LENGTH } from '../config.js';
 
 const BANNERS = {
@@ -11,7 +11,30 @@ function formatTime(iso) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-export default function ChatWindow({ peer, me, messages, status, onSend, onRetry, onBack }) {
+function sameDay(a, b) {
+  return new Date(a).toDateString() === new Date(b).toDateString();
+}
+
+function dayLabel(iso) {
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  if (sameDay(iso, today)) return 'Today';
+  if (sameDay(iso, yesterday)) return 'Yesterday';
+  return new Date(iso).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+export default function ChatWindow({
+  peer,
+  me,
+  messages,
+  status,
+  onSend,
+  onRetry,
+  onBack,
+  historyState,
+  onReloadHistory,
+}) {
   const [text, setText] = useState('');
   const endRef = useRef(null);
 
@@ -38,6 +61,7 @@ export default function ChatWindow({ peer, me, messages, status, onSend, onRetry
 
   const offline = status !== 'connected';
   const left = MAX_MESSAGE_LENGTH - text.length;
+  const peerName = peer.displayName || peer.username;
 
   function handleSubmit(event) {
     event.preventDefault();
@@ -53,7 +77,7 @@ export default function ChatWindow({ peer, me, messages, status, onSend, onRetry
         <button type="button" className="back" onClick={onBack} aria-label="Back to users" data-testid="back-button">
           ←
         </button>
-        <span>{peer.displayName || peer.username}</span>
+        <span>{peerName}</span>
       </header>
       {offline && (
         <div className="banner" role="status" data-testid="connection-banner">
@@ -61,33 +85,54 @@ export default function ChatWindow({ peer, me, messages, status, onSend, onRetry
         </div>
       )}
       <ul className="messages" aria-live="polite" data-testid="message-list">
-        {messages.length === 0 && <li className="note">No messages yet. Say hello.</li>}
-        {messages.map((m) => (
-          <li
-            key={m.id}
-            data-testid="message-item"
-            className={`msg ${m.from === me.id ? 'mine' : 'theirs'} ${m.state === 'failed' ? 'failed' : ''}`}
-          >
-            {m.content}
-            <span className="meta">
-              {m.state === 'sending' && 'Sending…'}
-              {m.state === 'failed' && (
-                <>
-                  Not sent: {m.error}{' '}
-                  <button
-                    type="button"
-                    className="retry"
-                    onClick={() => onRetry(m)}
-                    disabled={offline}
-                    data-testid="retry-button"
-                  >
-                    Try again
-                  </button>
-                </>
-              )}
-              {m.state !== 'sending' && m.state !== 'failed' && formatTime(m.timestamp)}
-            </span>
+        {historyState === 'loading' && (
+          <li className="note" role="status">
+            Loading earlier messages…
           </li>
+        )}
+        {historyState === 'error' && (
+          <li className="note" role="alert" data-testid="history-error">
+            Could not load earlier messages.{' '}
+            <button type="button" className="link" onClick={onReloadHistory} data-testid="history-retry">
+              Try again
+            </button>
+          </li>
+        )}
+        {messages.length === 0 && historyState !== 'loading' && historyState !== 'error' && (
+          <li className="note">No messages yet. Say hello.</li>
+        )}
+        {messages.map((m, index) => (
+          <Fragment key={m.id}>
+            {(index === 0 || !sameDay(messages[index - 1].timestamp, m.timestamp)) && (
+              <li className="day" data-testid="day-separator">
+                {dayLabel(m.timestamp)}
+              </li>
+            )}
+            <li
+              data-testid="message-item"
+              className={`msg ${m.from === me.id ? 'mine' : 'theirs'} ${m.state === 'failed' ? 'failed' : ''}`}
+            >
+              {m.content}
+              <span className="meta">
+                {m.state === 'sending' && 'Sending…'}
+                {m.state === 'failed' && (
+                  <>
+                    Not sent: {m.error}{' '}
+                    <button
+                      type="button"
+                      className="retry"
+                      onClick={() => onRetry(m)}
+                      disabled={offline}
+                      data-testid="retry-button"
+                    >
+                      Try again
+                    </button>
+                  </>
+                )}
+                {m.state !== 'sending' && m.state !== 'failed' && formatTime(m.timestamp)}
+              </span>
+            </li>
+          </Fragment>
         ))}
         <li ref={endRef} aria-hidden="true" />
       </ul>
@@ -96,7 +141,7 @@ export default function ChatWindow({ peer, me, messages, status, onSend, onRetry
           value={text}
           onChange={(e) => setText(e.target.value)}
           maxLength={MAX_MESSAGE_LENGTH}
-          placeholder={offline ? 'Waiting for connection…' : `Message ${peer.displayName || peer.username}`}
+          placeholder={offline ? 'Waiting for connection…' : `Message ${peerName}`}
           aria-label="Message"
           data-testid="message-input"
           autoFocus

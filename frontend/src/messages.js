@@ -34,3 +34,11 @@ export function normalizePresence(raw) {
   if (id === undefined || id === null || online === undefined) return null;
   return { userId: String(id), online: Boolean(online) };
 }
+
+// Combines history from the server with the messages already on screen: no duplicates, oldest first.
+// Messages already on screen win, so a message that is still sending keeps its status.
+export function mergeHistory(history, current) {
+  const byId = new Map();
+  [...history, ...current].forEach((m) => byId.set(m.id, m));
+  return [...byId.values()].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+}
