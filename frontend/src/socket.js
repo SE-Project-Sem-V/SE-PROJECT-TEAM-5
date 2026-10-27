@@ -1,6 +1,6 @@
 import { io } from 'socket.io-client';
 import { API_URL, EVENTS, USE_MOCK, assertSecureTransport } from './config.js';
-import { normalizeMessage } from './messages.js';
+import { normalizeMessage, normalizePresence } from './messages.js';
 import { RECONNECT_OPTIONS, createReconnectManager } from './reconnectManager.js';
 
 // Returns { sendMessage(to, text, clientId) -> Promise<message>, disconnect() }.
@@ -14,7 +14,7 @@ function ackError(res) {
   return (typeof e === 'string' ? e : e?.message) || res?.message || 'The server rejected the message.';
 }
 
-function realConnection(token, user, { onMessage, onStatus }) {
+function realConnection(token, user, { onMessage, onStatus, onPresence }) {
   assertSecureTransport();
   onStatus('connecting');
   // The JWT goes in the handshake (SAD flow 1, step 3). Never log it.
@@ -22,6 +22,10 @@ function realConnection(token, user, { onMessage, onStatus }) {
   const stopReconnectManager = createReconnectManager(socket, onStatus);
 
   socket.on(EVENTS.RECEIVE, (raw) => onMessage(normalizeMessage(raw)));
+  socket.on(EVENTS.PRESENCE, (raw) => {
+    const update = normalizePresence(raw);
+    if (update) onPresence?.(update);
+  });
 
   return {
     sendMessage: (to, text, clientId) =>
@@ -41,10 +45,18 @@ function realConnection(token, user, { onMessage, onStatus }) {
   };
 }
 
-function mockConnection(user, { onMessage, onStatus }) {
+function mockConnection(user, { onMessage, onStatus, onPresence }) {
   const timers = [];
   onStatus('connecting');
   timers.push(setTimeout(() => onStatus('connected'), 400));
+  // Demo only: bob goes online and offline every 6 seconds so you can see the indicator change.
+  let bobOnline = false;
+  timers.push(
+    setInterval(() => {
+      bobOnline = !bobOnline;
+      onPresence?.({ userId: 'u2', online: bobOnline });
+    }, 6000),
+  );
 
   return {
     sendMessage: (to, text) =>

@@ -25,3 +25,12 @@ export function normalizeMessage(raw, defaults = {}) {
 export function appendUnique(list, message) {
   return list.some((m) => m.id === message.id) ? list : [...list, message];
 }
+
+// Reads an online/offline update from the server. Returns null if it cannot be understood.
+export function normalizePresence(raw) {
+  const id = raw.userId ?? raw.id;
+  const online =
+    raw.online ?? raw.isOnline ?? (typeof raw.status === 'string' ? raw.status.toLowerCase() === 'online' : undefined);
+  if (id === undefined || id === null || online === undefined) return null;
+  return { userId: String(id), online: Boolean(online) };
+}

@@ -24,7 +24,7 @@ export default function ChatWindow({ peer, me, messages, status, onSend, onRetry
     return (
       <div className="empty" data-testid="empty-state">
         <div>
-          <h2>Hi, {me.username}</h2>
+          <h2>Hi, {me.displayName || me.username}</h2>
           <p>Start a conversation in three steps:</p>
           <ol className="steps">
             <li>Search for a user in the list.</li>
@@ -53,7 +53,7 @@ export default function ChatWindow({ peer, me, messages, status, onSend, onRetry
         <button type="button" className="back" onClick={onBack} aria-label="Back to users" data-testid="back-button">
           ←
         </button>
-        <span>{peer.username}</span>
+        <span>{peer.displayName || peer.username}</span>
       </header>
       {offline && (
         <div className="banner" role="status" data-testid="connection-banner">
@@ -96,7 +96,7 @@ export default function ChatWindow({ peer, me, messages, status, onSend, onRetry
           value={text}
           onChange={(e) => setText(e.target.value)}
           maxLength={MAX_MESSAGE_LENGTH}
-          placeholder={offline ? 'Waiting for connection…' : `Message ${peer.username}`}
+          placeholder={offline ? 'Waiting for connection…' : `Message ${peer.displayName || peer.username}`}
           aria-label="Message"
           data-testid="message-input"
           autoFocus

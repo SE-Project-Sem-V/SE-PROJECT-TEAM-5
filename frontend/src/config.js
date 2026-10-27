@@ -3,7 +3,7 @@ export const API_URL = (import.meta.env.VITE_API_URL || 'http://localhost:5000')
 export const MAX_MESSAGE_LENGTH = Number(import.meta.env.VITE_MAX_MESSAGE_LENGTH) || 1000;
 
 // Socket event names from SAD section 4.3. If the team agrees different names, change them only here.
-export const EVENTS = { SEND: 'sendMessage', RECEIVE: 'newMessage' };
+export const EVENTS = { SEND: 'sendMessage', RECEIVE: 'newMessage', PRESENCE: 'presenceUpdate' };
 
 const LOCAL_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
 
