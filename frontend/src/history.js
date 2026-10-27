@@ -1,16 +1,13 @@
-import { API_URL, USE_MOCK, assertSecureTransport } from './config.js';
+import { getDirectMessages } from './api.js';
+import { USE_MOCK } from './config.js';
 import { normalizeMessage } from './messages.js';
 
-// ASSUMED endpoint: the SAD does not define chat history yet (CHAT-F-011).
-// Change this one line if the backend uses a different path.
-const historyPath = (peerId) => `/api/messages/history?userId=${encodeURIComponent(peerId)}&limit=50`;
-
-const wait = (ms = 300) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Loads the recent messages between the logged-in user (meId) and peerId, oldest first.
+// Loads the saved messages between the logged-in user (meId) and peerId, oldest first.
+// The real request lives in api.js (getDirectMessages -> GET /api/users/:userId/messages).
 export async function fetchHistory(peerId, token, meId) {
   if (USE_MOCK) {
-    await wait();
+    // Demo messages so the history screen can be tried without a backend.
+    await new Promise((resolve) => setTimeout(resolve, 300));
     const day = 24 * 60 * 60 * 1000;
     const start = Date.now() - day;
     return [
@@ -20,21 +17,7 @@ export async function fetchHistory(peerId, token, meId) {
     ];
   }
 
-  assertSecureTransport();
-  let response;
-  try {
-    response = await fetch(`${API_URL}${historyPath(peerId)}`, {
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    });
-  } catch {
-    throw new Error('Cannot reach the server. Check your connection and try again.');
-  }
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const e = data.error;
-    throw new Error((typeof e === 'string' ? e : e?.message) || data.message || `Could not load history (error ${response.status}).`);
-  }
-  const list = Array.isArray(data) ? data : data.messages || [];
+  const list = await getDirectMessages(peerId, token);
   return list.map((raw) => {
     const m = normalizeMessage(raw);
     return { ...m, to: m.to ?? (m.from === meId ? peerId : meId) };
