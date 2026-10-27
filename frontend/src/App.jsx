@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import AuthScreen from './components/AuthScreen.jsx';
 import UserList from './components/UserList.jsx';
 import ChatWindow from './components/ChatWindow.jsx';
-import { logout } from './api.js';
+import { getOrCreateDirectConversation, logout } from './api.js';
 import { fetchHistory } from './history.js';
 import { appendUnique, mergeHistory } from './messages.js';
 import { connectSocket } from './socket.js';
@@ -31,6 +31,11 @@ function saveSession(session) {
   } catch {
     /* storage unavailable: the user just logs in again after a refresh */
   }
+}
+
+// Unique id for each message. The server uses it (clientId) to ignore a retry of a message it already saved.
+function newClientId() {
+  return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 export default function App() {
@@ -64,7 +69,7 @@ export default function App() {
     if (status === 'connected' && (previous === 'reconnecting' || previous === 'disconnected')) {
       setNotice({ kind: 'ok', text: 'You are back online.' });
       // Fill in anything that arrived while the connection was down.
-      if (peerRef.current) loadHistory(peerRef.current.id);
+      if (peerRef.current) openConversation(peerRef.current.id);
     } else if (status === 'reconnecting' && previous === 'connected') {
       setNotice({ kind: 'warn', text: 'Connection lost. Trying to reconnect…' });
     } else if (status === 'disconnected') {
@@ -122,15 +127,18 @@ export default function App() {
     setNotice(null);
   }
 
-  // CHAT-F-011: load recent messages for a conversation and merge them with what is already on screen.
-  async function loadHistory(peerId) {
+  // The backend only accepts messages for a conversation that exists, so open it first (this is safe to repeat).
+  // Then load the saved messages (CHAT-F-011) and merge them with what is already on screen.
+  async function openConversation(peerId) {
     setHistoryState((prev) => ({ ...prev, [peerId]: 'loading' }));
     try {
+      await getOrCreateDirectConversation(peerId, session.token);
       const history = await fetchHistory(peerId, session.token, session.user.id);
       setMessages((prev) => ({ ...prev, [peerId]: mergeHistory(history, prev[peerId] || []) }));
       setHistoryState((prev) => ({ ...prev, [peerId]: 'loaded' }));
-    } catch {
+    } catch (err) {
       setHistoryState((prev) => ({ ...prev, [peerId]: 'error' }));
+      setNotice({ kind: 'warn', text: err.message });
     }
   }
 
@@ -138,7 +146,7 @@ export default function App() {
     setPeer(user);
     setUnread((prev) => ({ ...prev, [user.id]: 0 }));
     const state = historyState[user.id];
-    if (!state || state === 'error') loadHistory(user.id);
+    if (!state || state === 'error') openConversation(user.id);
   }
 
   function patchMessage(peerId, id, patch) {
@@ -160,7 +168,7 @@ export default function App() {
 
   function handleSend(content) {
     const peerId = peer.id;
-    const tempId = `tmp-${Date.now()}`;
+    const tempId = `tmp-${newClientId()}`;
     const pending = {
       id: tempId,
       from: session.user.id,
@@ -215,7 +223,7 @@ export default function App() {
           onRetry={handleRetry}
           onBack={() => setPeer(null)}
           historyState={peer ? historyState[peer.id] : undefined}
-          onReloadHistory={() => loadHistory(peer.id)}
+          onReloadHistory={() => openConversation(peer.id)}
         />
       </main>
       {notice && (

@@ -4,12 +4,14 @@ import { login, register } from '../api.js';
 export default function AuthScreen({ onAuth }) {
   const [mode, setMode] = useState('login');
   const [username, setUsername] = useState('');
+  const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
-  const [errorField, setErrorField] = useState(null); // 'username' | 'password' | null
+  const [errorField, setErrorField] = useState(null); // 'username' | 'displayName' | 'password' | null
   const [busy, setBusy] = useState(false);
   const usernameRef = useRef(null);
+  const displayNameRef = useRef(null);
   const passwordRef = useRef(null);
   const isRegister = mode === 'register';
 
@@ -22,6 +24,7 @@ export default function AuthScreen({ onAuth }) {
     setError(message);
     setErrorField(field);
     if (field === 'username') usernameRef.current?.focus();
+    if (field === 'displayName') displayNameRef.current?.focus();
     if (field === 'password') passwordRef.current?.focus();
   }
 
@@ -30,11 +33,21 @@ export default function AuthScreen({ onAuth }) {
     setError('');
     setErrorField(null);
     if (!username.trim()) return fail('Enter a username.', 'username');
+    if (isRegister && (username.trim().length < 3 || username.trim().length > 64)) {
+      return fail('Username must be 3 to 64 characters.', 'username');
+    }
+    if (isRegister && !displayName.trim()) return fail('Enter a display name.', 'displayName');
+    if (isRegister && displayName.trim().length > 100) {
+      return fail('Display name must be at most 100 characters.', 'displayName');
+    }
     if (!password) return fail('Enter a password.', 'password');
     setBusy(true);
     try {
-      const submit = isRegister ? register : login;
-      onAuth(await submit(username.trim(), password));
+      onAuth(
+        isRegister
+          ? await register(username.trim(), password, displayName.trim())
+          : await login(username.trim(), password),
+      );
     } catch (err) {
       fail(err.message);
     } finally {
@@ -66,7 +79,7 @@ export default function AuthScreen({ onAuth }) {
           <h1>{isRegister ? 'Create your account' : 'Log in'}</h1>
           <p className="sub">
             {isRegister
-              ? 'Pick a username and password to start chatting.'
+              ? 'Choose a username, a display name and a password to start chatting.'
               : 'Welcome back. Enter your details.'}
           </p>
 
@@ -83,12 +96,30 @@ export default function AuthScreen({ onAuth }) {
               ref={usernameRef}
               value={username}
               onChange={(e) => setUsername(e.target.value)}
+              maxLength={64}
               autoComplete="username"
               aria-invalid={errorField === 'username'}
               aria-describedby={errorField === 'username' ? 'auth-error' : undefined}
               data-testid="auth-username"
             />
           </div>
+
+          {isRegister && (
+            <div className="field">
+              <label htmlFor="auth-displayname">Display name</label>
+              <input
+                id="auth-displayname"
+                ref={displayNameRef}
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                maxLength={100}
+                autoComplete="name"
+                aria-invalid={errorField === 'displayName'}
+                aria-describedby={errorField === 'displayName' ? 'auth-error' : undefined}
+                data-testid="auth-displayname"
+              />
+            </div>
+          )}
 
           <div className="field">
             <label htmlFor="auth-password">Password</label>
