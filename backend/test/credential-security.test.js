@@ -55,7 +55,7 @@ async function connect(t, url, auth) {
     socket.once("connect_error", (error) => {
       clearTimeout(timer);
       socket.disconnect();
-      resolve({ socket, accepted: false, message: error.message });
+      resolve({ socket, accepted: false, message: error.message, data: error.data });
     });
   });
 }
@@ -183,7 +183,7 @@ for (const mode of ["development", "production"]) {
     });
     assert.equal(response.status, 400);
     const text = await response.text();
-    assert.deepEqual(JSON.parse(text), { status: "error", message: "Invalid JSON request." });
+    assert.deepEqual(JSON.parse(text), { status: "error", code: "INVALID_JSON", message: "Invalid JSON request." });
     await new Promise(setImmediate);
     assertAbsent(output() + text, ["PW_PROBE_", "TOKEN_PROBE_", password, token, key, body]);
     assert.ok(output().includes("[http] Request failed:"));
@@ -206,6 +206,7 @@ test("oversized bodies and unsupported encodings receive controlled errors", { t
     });
     assert.equal(response.status, item.status);
     const text = await response.text();
+    assert.equal(JSON.parse(text).code, item.status === 413 ? "PAYLOAD_TOO_LARGE" : "UNSUPPORTED_ENCODING");
     await new Promise(setImmediate);
     assertAbsent(text + output(), [secret, secret.toUpperCase(), item.body]);
   }
@@ -221,7 +222,7 @@ test("ping remains available and unknown routes do not echo credential-bearing U
   const response = await fetch(`${url}/${secret}?token=${secret}`, { signal: AbortSignal.timeout(2000) });
   assert.equal(response.status, 404);
   const body = await response.text();
-  assert.deepEqual(JSON.parse(body), { status: "error", message: "Not found." });
+  assert.deepEqual(JSON.parse(body), { status: "error", code: "NOT_FOUND", message: "Not found." });
   assertAbsent(body + output(), [secret]);
 });
 
@@ -240,7 +241,7 @@ test("unexpected HTTP errors conceal messages, stacks, bodies and headers", asyn
   const response = await fetch(`http://127.0.0.1:${server.address().port}/failure`, { signal: AbortSignal.timeout(2000) });
   assert.equal(response.status, 500);
   const body = await response.text();
-  assert.deepEqual(JSON.parse(body), { status: "error", message: "Internal server error." });
+  assert.deepEqual(JSON.parse(body), { status: "error", code: "INTERNAL_ERROR", message: "Internal server error." });
   await new Promise(setImmediate);
   assertAbsent(body + output() + JSON.stringify([...response.headers]), [secret]);
 });
@@ -269,11 +270,14 @@ test("JWT WebSocket authentication and protected acknowledgements remain intact 
   const missing = await connect(t, url, {});
   assert.equal(missing.accepted, false);
   assert.equal(missing.message, "Authentication required");
-  for (const badToken of badTokens) {
+  assert.equal(missing.data.code, "AUTH_REQUIRED");
+  for (const [index, badToken] of badTokens.entries()) {
     const result = await connect(t, url, { token: badToken });
     assert.equal(result.accepted, false);
     assert.ok(["Invalid or expired token", "Invalid token payload"].includes(result.message));
-    assertAbsent(result.message, [badToken, key]);
+    assert.equal(result.data.code, index === 1 ? "AUTH_EXPIRED" : "AUTH_INVALID");
+    assert.equal(result.data.message, result.message);
+    assertAbsent(result.message + JSON.stringify(result.data), [badToken, key]);
   }
   valid.socket.disconnect();
   await new Promise(setImmediate);
@@ -291,7 +295,8 @@ test("message database failures retain safe acknowledgements and redact private 
   const response = await acknowledge(connection.socket, "sendMessage", {
     to: randomUUID(), text: secret, clientId: randomUUID(),
   });
-  assert.deepEqual(response, { ok: false, error: "Message could not be saved. Please try again." });
+  assert.deepEqual(response, { ok: false, code: "INTERNAL_ERROR",
+    message: "Message could not be saved. Please try again.", error: "Message could not be saved. Please try again." });
   assertAbsent(output() + JSON.stringify(response), [secret, key, token]);
   assert.ok(output().includes("[messages] Failed to save message:"));
 });

@@ -2,6 +2,7 @@
 const express = require("express");
 const { randomUUID } = require("node:crypto");
 const jwt = require("jsonwebtoken");
+const { AppError, sendHttpError } = require("../errors");
 const {
   hashPassword,
   verifyPassword,
@@ -24,10 +25,7 @@ function createAuthRouter({ pool, jwtSecret }) {
         !displayName.trim() ||
         displayName.trim().length > 100
       ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Valid username, password, and display name are required.",
-        });
+        return sendHttpError(res, new AppError("INVALID_INPUT", "registration"));
       }
 
       const normalizedUsername = username.trim();
@@ -37,10 +35,7 @@ function createAuthRouter({ pool, jwtSecret }) {
         passwordHash = await hashPassword(password);
       } catch (error) {
         if (error instanceof PasswordInputError) {
-          return res.status(400).json({
-            status: "error",
-            message: "Password must be nonempty and within the allowed length.",
-          });
+          return sendHttpError(res, new AppError("INVALID_INPUT", "password"));
         }
         throw error;
       }
@@ -65,10 +60,7 @@ function createAuthRouter({ pool, jwtSecret }) {
     });
     } catch (error) {
       if (error.code === "23505") {
-        return res.status(409).json({
-          status: "error",
-          message: "Username is already taken.",
-        });
+        return sendHttpError(res, new AppError("USERNAME_TAKEN"));
       }
       next(error);
     }
@@ -84,10 +76,7 @@ function createAuthRouter({ pool, jwtSecret }) {
         typeof password !== "string" ||
         !password
       ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Username and password are required.",
-        });
+        return sendHttpError(res, new AppError("INVALID_INPUT", "login"));
       }
 
       const result = await pool.query(
@@ -104,10 +93,7 @@ function createAuthRouter({ pool, jwtSecret }) {
         : false;
 
       if (!valid) {
-        return res.status(401).json({
-          status: "error",
-          message: "Invalid username or password.",
-        });
+        return sendHttpError(res, new AppError("INVALID_CREDENTIALS"));
       }
 
       const token = jwt.sign({ sub: user.id }, jwtSecret, {

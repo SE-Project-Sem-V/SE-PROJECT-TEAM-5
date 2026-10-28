@@ -1,15 +1,18 @@
+const { AppError, httpErrorResponse, sendHttpError } = require("../errors");
+
 const PARSER_ERRORS = new Map([
-  ["entity.parse.failed", [400, "Invalid JSON request."]],
-  ["entity.too.large", [413, "Request body is too large."]],
-  ["charset.unsupported", [415, "Unsupported request encoding."]],
-  ["encoding.unsupported", [415, "Unsupported request encoding."]],
-  ["request.aborted", [400, "Invalid request."]],
-  ["request.size.invalid", [400, "Invalid request."]],
+  ["entity.parse.failed", "INVALID_JSON"],
+  ["entity.too.large", "PAYLOAD_TOO_LARGE"],
+  ["charset.unsupported", "UNSUPPORTED_ENCODING"],
+  ["encoding.unsupported", "UNSUPPORTED_ENCODING"],
+  ["request.aborted", "INVALID_INPUT"],
+  ["request.size.invalid", "INVALID_INPUT"],
 ]);
 
 function createHttpErrorHandler(logger = console) {
   return function httpErrorHandler(error, _req, res, _next) {
-    const [status, message] = PARSER_ERRORS.get(error?.type) || [500, "Internal server error."];
+    const parserCode = PARSER_ERRORS.get(error?.type);
+    const { status, body } = httpErrorResponse(parserCode ? new AppError(parserCode) : error);
     // All logged values are controlled here. Raw errors may contain a complete
     // request body, SQL details, authorization headers or credential fragments.
     logger.error("[http] Request failed:", status);
@@ -18,13 +21,13 @@ function createHttpErrorHandler(logger = console) {
       res.destroy();
       return;
     }
-    res.status(status).json({ status: "error", message });
+    res.status(status).json(body);
   };
 }
 
 function notFound(_req, res) {
   // Express's default 404 can echo a credential accidentally placed in a URL.
-  res.status(404).json({ status: "error", message: "Not found." });
+  return sendHttpError(res, new AppError("NOT_FOUND"));
 }
 
 module.exports = { createHttpErrorHandler, notFound };

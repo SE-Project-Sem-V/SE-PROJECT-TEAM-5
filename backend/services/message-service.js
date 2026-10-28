@@ -1,5 +1,7 @@
 ﻿const { withTransaction } = require("../db/pool");
 
+const { AppError } = require("../errors");
+
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -70,7 +72,7 @@ async function saveDirectMessage(pool, senderId, recipientId, text, clientId) {
     );
 
     if (roomResult.rowCount !== 1) {
-      throw new Error("DIRECT_ROOM_NOT_FOUND");
+      throw new AppError("CONVERSATION_NOT_FOUND");
     }
 
     const roomId = roomResult.rows[0].id;
@@ -89,7 +91,7 @@ async function saveDirectMessage(pool, senderId, recipientId, text, clientId) {
       membershipResult.rowCount !== 2 ||
       membershipResult.rows.some((member) => member.left_at !== null)
     ) {
-      throw new Error("ACTIVE_MEMBERSHIP_REQUIRED");
+      throw new AppError("ROOM_FORBIDDEN");
     }
 
     const insertResult = await client.query(
@@ -113,7 +115,7 @@ async function saveDirectMessage(pool, senderId, recipientId, text, clientId) {
       row = existingResult.rows[0];
 
       if (!row || row.room_id !== roomId || row.content !== text) {
-        throw new Error("CLIENT_ID_REUSED");
+        throw new AppError("CLIENT_ID_CONFLICT");
       }
     }
 

@@ -196,6 +196,8 @@ test(
           });
 
           assert.equal(response.ok, false);
+          assert.equal(response.code, "INVALID_MESSAGE");
+          assert.equal(response.message, response.error);
           assert.match(response.error, /message must contain text/i);
         },
       );
@@ -208,6 +210,8 @@ test(
         });
 
         assert.equal(response.ok, false);
+        assert.equal(response.code, "CONVERSATION_NOT_FOUND");
+        assert.equal(response.message, response.error);
         assert.match(response.error, /conversation/i);
       });
 
@@ -229,7 +233,24 @@ test(
         });
 
         assert.equal(conflicting.ok, false);
+        assert.equal(conflicting.code, "CLIENT_ID_CONFLICT");
+        assert.equal(conflicting.message, conflicting.error);
         assert.match(conflicting.error, /clientId/i);
+      });
+
+      await t.test("inactive membership returns ROOM_FORBIDDEN without storing a message", async () => {
+        await pool.query("UPDATE room_members SET left_at = now() WHERE room_id = $1 AND user_id = $2",
+          [DIRECT_ROOM, USERS[1][0]]);
+        const clientId = `forbidden-${randomUUID()}`;
+        const response = await sendMessage(alice, {
+          to: USERS[1][0], text: "Must not be persisted", clientId,
+        });
+        assert.equal(response.ok, false);
+        assert.equal(response.code, "ROOM_FORBIDDEN");
+        assert.equal(response.message, response.error);
+        const result = await pool.query("SELECT id FROM messages WHERE sender_id = $1 AND client_id = $2",
+          [USERS[0][0], clientId]);
+        assert.equal(result.rowCount, 0);
       });
     } finally {
       if (alice) alice.disconnect();
