@@ -114,3 +114,25 @@ button, input { font: inherit; }
 
 /* Chat history (CHATAPP-54) */
 .day { align-self: center; padding: 0.1rem 0.75rem; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 0.8rem; }
+
+
+/* Group chat (CHATAPP-49) */
+.tabs { display: flex; border-bottom: 1px solid var(--line); }
+.tab { flex: 1; padding: 0.65rem; border: 0; border-bottom: 3px solid transparent; background: none; color: var(--muted); font-weight: 600; cursor: pointer; }
+.tab.on { border-bottom-color: var(--accent); color: var(--accent); }
+.groups { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.groups-head { padding: 0.75rem 1rem; }
+.btn-small { width: 100%; padding: 0.55rem; border: 1px solid var(--accent); border-radius: 6px; background: none; color: var(--accent); font-weight: 600; cursor: pointer; }
+.group-form { display: grid; gap: 0.75rem; padding: 0 1rem 1rem; border-bottom: 1px solid var(--line); }
+.group-form input { width: 100%; padding: 0.55rem 0.7rem; border: 1px solid var(--line); border-radius: 6px; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.chip { padding: 0.15rem 0.6rem; border: 1px solid var(--accent); border-radius: 999px; background: #dceaf0; color: var(--ink); font-size: 0.85rem; cursor: pointer; }
+.pick-list { max-height: 9rem; margin: 0; padding: 0; overflow: auto; border: 1px solid var(--line); border-radius: 6px; list-style: none; }
+.pick { display: flex; width: 100%; justify-content: space-between; padding: 0.45rem 0.7rem; border: 0; background: none; text-align: left; cursor: pointer; }
+.pick[aria-pressed='true'] { background: #dceaf0; font-weight: 600; }
+.form-actions { display: flex; gap: 0.5rem; }
+.form-actions .btn { flex: 1; width: auto; }
+.btn-ghost { flex: 1; padding: 0.7rem; border: 1px solid var(--line); border-radius: 6px; background: none; color: var(--ink); cursor: pointer; }
+.chat-title { display: flex; flex-direction: column; line-height: 1.2; }
+.chat-sub { font-size: 0.8rem; font-weight: 400; color: var(--muted); }
+.sender { display: block; margin-bottom: 0.15rem; font-size: 0.75rem; font-weight: 700; opacity: 0.75; }
