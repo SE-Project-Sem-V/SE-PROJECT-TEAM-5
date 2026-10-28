@@ -287,6 +287,62 @@ for real registration/login through the UI; mock tokens cannot access this endpo
 CHATAPP-11 owns creating/reusing direct rooms and memberships before sending to a
 new recipient. Existing messaging still requires a direct room with active members.
 
+### Group room database operations (CHATAPP-50)
+
+`db/rooms.js` reuses the existing tables and `withTransaction()`; it creates no
+pool, table or migration. Its exports are trusted database primitives, **not**
+HTTP endpoints or authorization checks:
+
+| Helper | Behavior |
+| --- | --- |
+| `createGroupRoom(pool, { name, createdBy, memberIds = [] })` | Atomically inserts a group and active memberships for its creator and selected users. Returns the room's `id`, `kind`, `name`, `created_by`, `created_at` and active `members`. Existing schema constraints validate names and user references. |
+| `addGroupMembers(pool, roomId, memberIds)` | Atomically adds a batch and returns the full active member list. Locks the room and existing requested memberships. Repeated active memberships preserve their timestamps; repeated UUIDs, including different casing, are deduplicated. |
+| `isActiveMember(db, roomId, userId)` | Returns a Boolean using `left_at IS NULL`; absent rooms/users/memberships return false. Accepts a pool or transaction client. |
+| `listRoomMembers(db, roomId, { includeDeparted = false } = {})` | Returns `id`, `username`, `joined_at`, `left_at`, ordered by lowercase username with C collation, then UUID. Departed memberships require explicit opt-in; unknown rooms return an empty list. Accepts a pool or transaction client. |
+
+Writes use bound parameters and roll back together on failure. They never update
+an existing membership. `addGroupMembers` raises `RoomOperationError` with code
+`ROOM_NOT_FOUND`, `GROUP_ROOM_REQUIRED` (for any direct room), or
+`MEMBER_REJOIN_REQUIRED` (if any requested member has departed). A rejected batch
+adds nobody and preserves departed records. PostgreSQL validation/FK errors
+propagate to the caller; use the existing sanitized error handling rather than
+returning/logging raw errors. Active membership reads are point-in-time checks,
+not a substitute for transactional membership locks when sending messages.
+
+The merged `frontend/src/groups.js` explicitly labels its API contract as assumed:
+
+- `GET /api/rooms` -> `{ rooms: [{ id, name, members: [{ id, username }] }] }`,
+  restricted to the caller's groups.
+- `POST /api/rooms` with `{ name, memberIds }` -> `{ room: { id, name, members } }`.
+  The authenticated identity must supply `createdBy`; it is not in the payload.
+- `GET /api/rooms/:roomId/messages` -> `{ messages: [{ id, from, roomId, content, timestamp }] }`.
+- Socket input `sendMessage { roomId, text, clientId }`, output `newMessage` with
+  `roomId`. The existing backend handler currently accepts direct recipients only.
+
+`NewGroupForm.jsx` trims names, limits them to 100 characters, excludes the creator
+from selection and requires at least one selected user. `GroupList.jsx` uses
+`members.length` for its count. The creation helper's result can supply the
+assumed POST response; the route should explicitly project its public API fields.
+Room-directory queries, group HTTP routes and group message handling remain with
+the integrating tasks (frontend references CHATAPP-15/16). No separate invite or
+rejoin endpoint contract is specified by these frontend files.
+
+**Decisions needed from Anand before service integration:** who may create groups,
+invite/add/remove members or inspect membership/history; whether invitations need
+acceptance; minimum/maximum group size; whether departed members may rejoin, who
+may authorize that and what history they may see. These helpers enforce no
+invented permission/size policy and can store a creator-only group; the service
+must apply the agreed rules before calling them. Until rejoin behavior is agreed,
+additions of departed members explicitly fail.
+
+Inspection found schema/seed fixtures and teammate direct-room operations, but no
+existing reusable group database operations in the checked local Git refs. The
+existing direct-conversation route in `routes/users.js` uses an upsert that resets
+`left_at = NULL`. That pre-existing direct reactivation behavior needs an explicit
+decision from Anand and its owner; CHATAPP-50 leaves that route unchanged. The new
+group helper rejects every direct room, including attempts to add a third user.
+There is no new database-wide trigger constraining raw membership SQL.
+
 ### Rooms and messaging handoff
 
 - Reuse one pool per process with `createPool()` from `db/pool.js`. Queries use
@@ -346,12 +402,12 @@ configuration, and a separate pre-created `TEST_PGDATABASE` ending in `_test`.
 It deliberately exits nonzero if prerequisites are missing; it never silently
 substitutes mocks or uses `PGDATABASE`.
 
-This command runs `test/database.test.js`, `test/message-handler.test.js`, and
-`test/user-search.database.test.js`. HTTP and messaging tests generate temporary
+This command runs `test/database.test.js`, `test/message-handler.test.js`,
+`test/user-search.database.test.js`, and `test/rooms.database.test.js`. HTTP and messaging tests generate temporary
 signing keys; they do not need a deployment `JWT_SECRET`.
 
 Each suite checks the actual target name, creates a random `chatapp_test_<uuid>`
-or `chatapp_message_test_<uuid>` or `chatapp_search_test_<uuid>` schema, sets an exclusive search path and drops
+or `chatapp_message_test_<uuid>`, `chatapp_search_test_<uuid>` or `chatapp_rooms_test_<uuid>` schema, sets an exclusive search path and drops
 only its own schema afterward. The database suite
 tests connectivity, real migrations/concurrent migration runs, checksum tampering,
 DDL rollback, repeatable/concurrent seeds, preserved data/hashes, PK/FK/username
@@ -367,6 +423,9 @@ case-insensitive partial matching, caller exclusion, empty/no-match results,
 literal wildcard and SQL-injection inputs, account existence, public-field
 projection, deterministic ordering and the 20-result cap. It creates/deletes only
 its own temporary fixture data and schema, never development or shared records.
+The room suite tests atomic group/creator creation, duplicate/concurrent additions,
+invalid references and rollback, schema name constraints, parameterized names,
+active/departed membership, stable public member listings and direct-room rejection.
 Database-server restart durability is a separate manual check below.
 
 `.github/workflows/backend-db-ci.yml` starts disposable PostgreSQL 18 with a random
