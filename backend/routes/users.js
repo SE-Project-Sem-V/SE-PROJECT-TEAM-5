@@ -1,6 +1,7 @@
 const { Router } = require("express");
 const { requireAuth } = require("../middleware/require-auth");
 const { withTransaction } = require("../db/pool");
+const { AppError, sendHttpError } = require("../errors");
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -50,11 +51,7 @@ function createUsersRouter({ pool, jwtSecret }) {
       const query = searchQuery(req.originalUrl);
 
       if (query === null) {
-        return res.status(400).json({
-          status: "error",
-          message:
-            "Use a single q parameter of at most 64 characters without control characters.",
-        });
+        return sendHttpError(res, new AppError("INVALID_INPUT", "search"));
       }
 
       if (!query) {
@@ -94,19 +91,13 @@ function createUsersRouter({ pool, jwtSecret }) {
         const recipientId = req.params.userId;
 
         if (!UUID_PATTERN.test(recipientId)) {
-          return res.status(400).json({
-            status: "error",
-            message: "Invalid recipient ID.",
-          });
+          return sendHttpError(res, new AppError("INVALID_INPUT", "recipient"));
         }
 
         if (
           recipientId.toLowerCase() === senderId.toLowerCase()
         ) {
-          return res.status(400).json({
-            status: "error",
-            message: "You cannot start a conversation with yourself.",
-          });
+          return sendHttpError(res, new AppError("INVALID_INPUT", "selfConversation"));
         }
 
         const conversation = await withTransaction(
@@ -118,9 +109,7 @@ function createUsersRouter({ pool, jwtSecret }) {
             );
 
             if (rowCount !== 1) {
-              const error = new Error("Recipient not found.");
-              error.status = 404;
-              throw error;
+              throw new AppError("RECIPIENT_NOT_FOUND");
             }
 
             const [low, high] = [senderId, recipientId].sort(
@@ -155,13 +144,6 @@ function createUsersRouter({ pool, jwtSecret }) {
 
         return res.status(200).json({ conversation });
       } catch (error) {
-        if (error.status === 404) {
-          return res.status(404).json({
-            status: "error",
-            message: error.message,
-          });
-        }
-
         return next(error);
       }
     },
@@ -177,19 +159,13 @@ function createUsersRouter({ pool, jwtSecret }) {
         const recipientId = req.params.userId;
 
         if (!UUID_PATTERN.test(recipientId)) {
-          return res.status(400).json({
-            status: "error",
-            message: "Invalid recipient ID.",
-          });
+          return sendHttpError(res, new AppError("INVALID_INPUT", "recipient"));
         }
 
         if (
           recipientId.toLowerCase() === currentUserId.toLowerCase()
         ) {
-          return res.status(400).json({
-            status: "error",
-            message: "You cannot load a conversation with yourself.",
-          });
+          return sendHttpError(res, new AppError("INVALID_INPUT", "selfHistory"));
         }
 
         const { rows } = await pool.query(

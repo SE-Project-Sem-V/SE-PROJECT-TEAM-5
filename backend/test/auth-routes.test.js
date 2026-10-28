@@ -184,6 +184,7 @@ test("login rejects an incorrect password", async (t) => {
 
   assert.equal(body.status, "error");
   assert.equal(body.message, "Invalid username or password.");
+  assert.equal(body.code, "INVALID_CREDENTIALS");
 });
 
 test("login rejects a nonexistent username", async (t) => {
@@ -199,4 +200,5 @@ test("login rejects a nonexistent username", async (t) => {
   });
 
   assert.equal(response.status, 401);
+  assert.equal((await response.json()).code, "INVALID_CREDENTIALS");
 });

@@ -137,8 +137,8 @@ test("CHATAPP-10 authenticated user search against isolated PostgreSQL", { timeo
   await t.test("requires a valid token and rechecks account existence on every request", async () => {
     const absent = jwt.sign({ sub: randomUUID() }, key, { expiresIn: "2m" });
     const expired = jwt.sign({ sub: me }, key, { expiresIn: -1 });
-    for (const auth of [null, absent, expired, "invalid"]) {
-      assert.deepEqual(await request("ali", auth), { status: 401, body: { status: "error", message: "Authentication required." } });
+    for (const [auth, code] of [[null, "AUTH_REQUIRED"], [absent, "AUTH_INVALID"], [expired, "AUTH_EXPIRED"], ["invalid", "AUTH_INVALID"]]) {
+      assert.deepEqual(await request("ali", auth), { status: 401, body: { status: "error", code, message: "Authentication required." } });
     }
     const departingId = ids[names.indexOf("departed")];
     const departingToken = jwt.sign({ sub: departingId }, key, { expiresIn: "2m" });

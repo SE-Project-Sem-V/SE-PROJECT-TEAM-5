@@ -1,13 +1,14 @@
 
 const { formatDatabaseError } = require("../db/config");
+const { AppError, normalizeError, socketErrorResponse, messageValidationError } = require("../errors");
 const {
   validateMessage,
   saveDirectMessage,
 } = require("../services/message-service");
 
-function acknowledgeError(callback, message) {
+function acknowledgeError(callback, error) {
   if (typeof callback === "function") {
-    callback({ ok: false, error: message });
+    callback(socketErrorResponse(error));
   }
 }
 
@@ -43,7 +44,7 @@ function registerMessageHandlers({
     );
 
     if (validationError) {
-      return acknowledgeError(callback, validationError);
+      return acknowledgeError(callback, messageValidationError(validationError, maxMessageLength));
     }
 
     try {
@@ -61,17 +62,8 @@ function registerMessageHandlers({
       // Deliver the persisted message to the recipient's connected clients.
       io.to(`user:${message.to}`).emit("newMessage", message);
     } catch (error) {
-      const knownErrors = {
-        DIRECT_ROOM_NOT_FOUND:
-          "No direct conversation exists with this recipient.",
-        ACTIVE_MEMBERSHIP_REQUIRED:
-          "Both users must be active members of the conversation.",
-        CLIENT_ID_REUSED:
-          "This clientId was already used for a different message.",
-      };
-
-      if (knownErrors[error.message]) {
-        return acknowledgeError(callback, knownErrors[error.message]);
+      if (normalizeError(error).code !== "INTERNAL_ERROR") {
+        return acknowledgeError(callback, error);
       }
 
       logger.error(
@@ -81,7 +73,7 @@ function registerMessageHandlers({
 
       acknowledgeError(
         callback,
-        "Message could not be saved. Please try again.",
+        new AppError("INTERNAL_ERROR", "messageSave"),
       );
     }
   });
