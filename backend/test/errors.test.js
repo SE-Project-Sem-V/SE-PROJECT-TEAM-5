@@ -8,7 +8,7 @@ const {
 const { validateMessage } = require("../services/message-service");
 
 test("the public catalogue provides consistent HTTP, ACK and connection errors", () => {
-  assert.equal(Object.keys(ERROR_CATALOGUE).length, 16);
+  assert.equal(Object.keys(ERROR_CATALOGUE).length, 18);
   for (const [code, definition] of Object.entries(ERROR_CATALOGUE)) {
     const error = new AppError(code);
     assert.equal(error instanceof Error, true);
@@ -75,3 +75,4 @@ test("CHATAPP-27 validation explanations map to INVALID_MESSAGE without acceptin
   assert.ok(!JSON.stringify(socketErrorResponse(messageValidationError(privateValue, 10))).includes(privateValue));
   assert.equal(normalizeError(messageValidationError("untrusted", NaN)).code, "INVALID_MESSAGE");
 });
+

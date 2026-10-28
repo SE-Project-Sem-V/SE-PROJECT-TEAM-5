@@ -88,14 +88,31 @@ test("CHATAPP-50 room operations against isolated PostgreSQL", { timeout: 60000 
     const room = await group();
     const before = await listRoomMembers(pool, room.id);
     await Promise.all([
-      addGroupMembers(pool, room.id, [alice, alice.toUpperCase(), zelda]),
-      addGroupMembers(pool, room.id, [zelda, alice]),
+      addGroupMembers(pool, room.id, [alice, alice.toUpperCase(), zelda], bob),
+      addGroupMembers(pool, room.id, [zelda, alice], bob),
     ]);
     const members = await listRoomMembers(pool, room.id);
     assert.deepEqual(members.map((m) => m.id), [alice, bob, zelda]);
     assert.deepEqual(members.find((m) => m.id === bob), before[0]);
-    assert.deepEqual(await addGroupMembers(pool, room.id, [alice, bob, zelda]), members);
-    assert.deepEqual(await addGroupMembers(pool, room.id, []), members);
+    assert.deepEqual(await addGroupMembers(pool, room.id, [alice, bob, zelda], bob), members);
+    assert.deepEqual(await addGroupMembers(pool, room.id, [], bob), members);
+  });
+
+  await t.test("only the group creator can add members", async () => {
+    const room = await group();
+    const before = await listRoomMembers(pool, room.id);
+
+    await assert.rejects(
+      addGroupMembers(pool, room.id, [alice], zelda),
+      (error) =>
+        error instanceof RoomOperationError &&
+        error.code === "ROOM_CREATOR_REQUIRED",
+    );
+
+    assert.deepEqual(await listRoomMembers(pool, room.id), before);
+
+    await addGroupMembers(pool, room.id, [alice], bob);
+    assert.equal(await isActiveMember(pool, room.id, alice), true);
   });
 
   await t.test("rejects unknown creators and rolls back group creation on an invalid member", async () => {
@@ -110,9 +127,9 @@ test("CHATAPP-50 room operations against isolated PostgreSQL", { timeout: 60000 
   await t.test("rejects invalid references and rolls back a batch without partial additions", async () => {
     const room = await group();
     const before = await counts();
-    await rejectCode(addGroupMembers(pool, randomUUID(), [alice]), "ROOM_NOT_FOUND");
-    await rejectCode(addGroupMembers(pool, room.id, [alice, randomUUID()]), "23503");
-    await rejectCode(addGroupMembers(pool, room.id, [alice, "not-a-uuid"]), "22P02");
+    await rejectCode(addGroupMembers(pool, randomUUID(), [alice], bob), "ROOM_NOT_FOUND");
+    await rejectCode(addGroupMembers(pool, room.id, [alice, randomUUID()], bob), "23503");
+    await rejectCode(addGroupMembers(pool, room.id, [alice, "not-a-uuid"], bob), "22P02");
     assert.deepEqual(await counts(), before);
     assert.deepEqual((await listRoomMembers(pool, room.id)).map((m) => m.id), [bob]);
   });
@@ -147,7 +164,7 @@ test("CHATAPP-50 room operations against isolated PostgreSQL", { timeout: 60000 
     const room = await group([alice]);
     await pool.query("UPDATE room_members SET left_at = now() WHERE room_id = $1 AND user_id = $2", [room.id, alice]);
     const before = await listRoomMembers(pool, room.id, { includeDeparted: true });
-    await assert.rejects(addGroupMembers(pool, room.id, [zelda, alice.toUpperCase()]),
+    await assert.rejects(addGroupMembers(pool, room.id, [zelda, alice.toUpperCase()], bob),
       (error) => error instanceof RoomOperationError && error.code === "MEMBER_REJOIN_REQUIRED");
     assert.deepEqual(await listRoomMembers(pool, room.id, { includeDeparted: true }), before);
     assert.equal(await isActiveMember(pool, room.id, zelda), false);
@@ -181,7 +198,7 @@ test("CHATAPP-50 room operations against isolated PostgreSQL", { timeout: 60000 
     await pool.query("UPDATE room_members SET left_at = now() WHERE room_id = $1 AND user_id = $2", [room.id, alice]);
     const before = await listRoomMembers(pool, room.id, { includeDeparted: true });
     for (const ids of [[zelda], [bob], [alice], []]) {
-      await rejectCode(addGroupMembers(pool, room.id, ids), "GROUP_ROOM_REQUIRED");
+      await rejectCode(addGroupMembers(pool, room.id, ids, bob), "GROUP_ROOM_REQUIRED");
     }
     assert.deepEqual(await listRoomMembers(pool, room.id, { includeDeparted: true }), before);
     assert.equal(await isActiveMember(pool, room.id, bob), true);
@@ -193,7 +210,7 @@ test("CHATAPP-50 room operations against isolated PostgreSQL", { timeout: 60000 
     const before = await counts();
     for (const memberIds of [null, alice, [null], [42]]) {
       await assert.rejects(group(memberIds), TypeError);
-      await assert.rejects(addGroupMembers(pool, randomUUID(), memberIds), TypeError);
+      await assert.rejects(addGroupMembers(pool, randomUUID(), memberIds, bob), TypeError);
     }
     await assert.rejects(createGroupRoom(pool, { name: null, createdBy: bob }), TypeError);
     await assert.rejects(createGroupRoom(pool, { name: "Group", createdBy: null }), TypeError);

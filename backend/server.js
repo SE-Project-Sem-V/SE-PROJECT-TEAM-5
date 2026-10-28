@@ -23,6 +23,7 @@ const {
   notFound,
 } = require("./middleware/error-handler");
 const { createUsersRouter } = require("./routes/users");
+const { createRoomsRouter } = require("./routes/rooms");
 const { createSocketAuthMiddleware } = require("./sockets/socket-auth");
 const { registerMessageHandlers } = require("./sockets/message-handler");
 const { saveDirectMessage } = require("./services/message-service");
@@ -63,6 +64,7 @@ function createChatServer({
   });
 
   app.use("/api/users", createUsersRouter({ pool, jwtSecret }));
+  app.use("/api/rooms", createRoomsRouter({ pool, jwtSecret }));
 
   // Register future HTTP routes above these final response/error handlers.
   app.use(notFound);
