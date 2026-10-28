@@ -1,5 +1,6 @@
 
 const { formatDatabaseError } = require("../db/config");
+const { AppError, ERROR_CATALOGUE ,normalizeError, socketErrorResponse, messageValidationError } = require("../errors");
 const {
   validateMessage,
   saveDirectMessage,
@@ -7,9 +8,9 @@ const {
   saveGroupMessage,
 } = require("../services/message-service");
 
-function acknowledgeError(callback, message) {
+function acknowledgeError(callback, error) {
   if (typeof callback === "function") {
-    callback({ ok: false, error: message });
+    callback(socketErrorResponse(error));
   }
 }
 
@@ -50,7 +51,7 @@ function registerMessageHandlers({
       : validateMessage(payload, senderId, maxMessageLength);
 
     if (validationError) {
-      return acknowledgeError(callback, validationError);
+      return acknowledgeError(callback, messageValidationError(validationError, maxMessageLength));
     }
 
     try {
@@ -86,20 +87,21 @@ function registerMessageHandlers({
       io.to(`user:${message.to}`).emit("newMessage", message);
     } catch (error) {
       const knownErrors = {
-        DIRECT_ROOM_NOT_FOUND:
-          "No direct conversation exists with this recipient.",
-        ACTIVE_MEMBERSHIP_REQUIRED:
-          "Both users must be active members of the conversation.",
-        GROUP_ROOM_NOT_FOUND:
-          "The group conversation does not exist.",
-        ROOM_ACCESS_DENIED:
-          "You must be an active member of this group to send messages.",
-        CLIENT_ID_REUSED:
-          "This clientId was already used for a different message.",
+        DIRECT_ROOM_NOT_FOUND: "CONVERSATION_NOT_FOUND",
+        ACTIVE_MEMBERSHIP_REQUIRED: "ROOM_FORBIDDEN",
+        GROUP_ROOM_NOT_FOUND: "GROUP_ROOM_NOT_FOUND",
+        ROOM_ACCESS_DENIED: "ROOM_ACCESS_DENIED",
+        CLIENT_ID_REUSED: "CLIENT_ID_CONFLICT",
       };
 
-      if (knownErrors[error.message]) {
-        return acknowledgeError(callback, knownErrors[error.message]);
+      const errorCode = knownErrors[error.message];
+
+      if (errorCode && Object.hasOwn(ERROR_CATALOGUE, errorCode)) {
+        return acknowledgeError(callback, new AppError(errorCode));
+      }
+
+      if (normalizeError(error).code !== "INTERNAL_ERROR") {
+        return acknowledgeError(callback, error);
       }
 
       logger.error(
@@ -109,7 +111,7 @@ function registerMessageHandlers({
 
       acknowledgeError(
         callback,
-        "Message could not be saved. Please try again.",
+        new AppError("INTERNAL_ERROR", "messageSave"),
       );
     }
   });

@@ -1,5 +1,6 @@
 
 const jwt = require("jsonwebtoken");
+const { AppError, socketConnectionError } = require("../errors");
 
 /**
  * Authenticates Socket.IO connections using a JWT supplied
@@ -10,7 +11,7 @@ function createSocketAuthMiddleware(jwtSecret) {
     const token = socket.handshake.auth?.token;
 
     if (typeof token !== "string" || !token) {
-      return next(new Error("Authentication required"));
+      return next(socketConnectionError(new AppError("AUTH_REQUIRED", "socket")));
     }
 
     try {
@@ -22,13 +23,14 @@ function createSocketAuthMiddleware(jwtSecret) {
         typeof payload.sub !== "string" ||
         !payload.sub
       ) {
-        return next(new Error("Invalid token payload"));
+        return next(socketConnectionError(new AppError("AUTH_INVALID", "payload")));
       }
 
       socket.data.user = { id: payload.sub };
       return next();
-    } catch {
-      return next(new Error("Invalid or expired token"));
+    } catch (error) {
+      const code = error instanceof jwt.TokenExpiredError ? "AUTH_EXPIRED" : "AUTH_INVALID";
+      return next(socketConnectionError(new AppError(code, "socket")));
     }
   };
 }

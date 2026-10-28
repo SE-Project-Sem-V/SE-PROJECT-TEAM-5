@@ -38,9 +38,9 @@ async function fixture(t, query) {
   return { key, token, userId, calls, logs, request, url };
 }
 
-function safeFailure(result, status, message) {
+function safeFailure(result, status, message, code = status === 500 ? "INTERNAL_ERROR" : "AUTH_INVALID") {
   assert.equal(result.response.status, status);
-  assert.deepEqual(result.body, { status: "error", message });
+  assert.deepEqual(result.body, { status: "error", code, message });
   assert.equal(result.response.headers.get("cache-control"), "no-store");
 }
 
@@ -63,7 +63,7 @@ test("missing or malformed HTTP authorization is rejected before database access
   const f = await fixture(t);
   for (const header of [null, "", "Bearer", "Basic invalid", "Bearer invalid", "Bearer one two"]) {
     const result = await f.request("?q=ali", header);
-    safeFailure(result, 401, "Authentication required.");
+    safeFailure(result, 401, "Authentication required.", header === null ? "AUTH_REQUIRED" : "AUTH_INVALID");
     assert.equal(result.response.headers.get("www-authenticate"), "Bearer");
   }
   assert.equal(f.calls.length, 0);
@@ -81,7 +81,10 @@ test("HTTP search rejects expired, tampered, premature, unsigned and wrong-algor
     jwt.sign({ sub: f.userId }, "", { algorithm: "none" }),
     jwt.sign({ sub: f.userId }, f.key, { algorithm: "HS384" }),
   ];
-  for (const token of tokens) safeFailure(await f.request("?q=ali", `Bearer ${token}`), 401, "Authentication required.");
+  for (const [index, token] of tokens.entries()) {
+    safeFailure(await f.request("?q=ali", `Bearer ${token}`), 401, "Authentication required.",
+      index === 0 ? "AUTH_EXPIRED" : "AUTH_INVALID");
+  }
   assert.equal(f.calls.length, 0);
   assert.equal(f.logs.length, 0);
 });
@@ -119,8 +122,8 @@ test("duplicate Authorization headers are rejected rather than choosing an ident
 
 test("empty searches still require authentication", async (t) => {
   const f = await fixture(t);
-  safeFailure(await f.request("?q=", null), 401, "Authentication required.");
-  safeFailure(await f.request("?q[]=invalid", null), 401, "Authentication required.");
+  safeFailure(await f.request("?q=", null), 401, "Authentication required.", "AUTH_REQUIRED");
+  safeFailure(await f.request("?q[]=invalid", null), 401, "Authentication required.", "AUTH_REQUIRED");
   assert.equal(f.calls.length, 0);
 });
 
@@ -145,6 +148,7 @@ test("malformed, repeated, structured, unknown and oversized query parameters re
     const result = await f.request(suffix);
     assert.equal(result.response.status, 400);
     assert.equal(result.body.status, "error");
+    assert.equal(result.body.code, "INVALID_INPUT");
     assert.ok(result.body.message.startsWith("Use a single q parameter"));
   }
   assert.ok(f.calls.every(({ values }) => values.length === 1));
