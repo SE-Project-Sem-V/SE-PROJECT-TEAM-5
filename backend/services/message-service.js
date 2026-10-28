@@ -3,12 +3,27 @@
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+const MESSAGE_FIELDS = new Set(["to", "text", "clientId"]);
+
 function validateMessage(payload, senderId, maxLength) {
-  if (!UUID_PATTERN.test(senderId)) {
+  if (typeof senderId !== "string" || !UUID_PATTERN.test(senderId)) {
     return "This account cannot send database messages.";
   }
 
-  if (!payload || typeof payload !== "object") {
+  if (
+    !payload ||
+    typeof payload !== "object" ||
+    Array.isArray(payload)
+  ) {
+    return "Invalid message payload.";
+  }
+
+  const keys = Object.keys(payload);
+
+  if (
+    keys.some((key) => !MESSAGE_FIELDS.has(key)) ||
+    Object.getPrototypeOf(payload) !== Object.prototype
+  ) {
     return "Invalid message payload.";
   }
 
@@ -18,11 +33,17 @@ function validateMessage(payload, senderId, maxLength) {
     return "A valid recipient is required.";
   }
 
-  if (to === senderId) {
+  if (to.toLowerCase() === senderId.toLowerCase()) {
     return "You cannot send a direct message to yourself.";
   }
 
-  if (typeof text !== "string" || !text.trim() || text.length > maxLength) {
+  if (
+    !Number.isSafeInteger(maxLength) ||
+    maxLength < 1 ||
+    typeof text !== "string" ||
+    !text.trim() ||
+    text.length > maxLength
+  ) {
     return `Message must contain text and be at most ${maxLength} characters.`;
   }
 
