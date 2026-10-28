@@ -3,6 +3,8 @@ const { formatDatabaseError } = require("../db/config");
 const {
   validateMessage,
   saveDirectMessage,
+  validateGroupMessage,
+  saveGroupMessage,
 } = require("../services/message-service");
 
 function acknowledgeError(callback, message) {
@@ -36,17 +38,41 @@ function registerMessageHandlers({
   socket.on("sendMessage", async (payload, callback) => {
     if (typeof callback !== "function") return;
 
-    const validationError = validateMessage(
-      payload,
-      senderId,
-      maxMessageLength,
-    );
+    // Group payloads have roomId; direct payloads have to.
+    const isGroupMessage =
+      payload !== null &&
+      typeof payload === "object" &&
+      !Array.isArray(payload) &&
+      Object.prototype.hasOwnProperty.call(payload, "roomId");
+
+    const validationError = isGroupMessage
+      ? validateGroupMessage(payload, senderId, maxMessageLength)
+      : validateMessage(payload, senderId, maxMessageLength);
 
     if (validationError) {
       return acknowledgeError(callback, validationError);
     }
 
     try {
+      if (isGroupMessage) {
+        const result = await saveGroupMessage(
+          pool,
+          senderId,
+          payload.roomId,
+          payload.text,
+          payload.clientId,
+        );
+
+        callback({ ok: true, message: result.message });
+
+        // Only active group members are selected for delivery.
+        for (const memberId of result.recipientIds) {
+          io.to(`user:${memberId}`).emit("newMessage", result.message);
+        }
+
+        return;
+      }
+
       const message = await saveDirectMessage(
         pool,
         senderId,
@@ -55,10 +81,8 @@ function registerMessageHandlers({
         payload.clientId,
       );
 
-      // Acknowledge only after the database transaction succeeds.
       callback({ ok: true, message });
 
-      // Deliver the persisted message to the recipient's connected clients.
       io.to(`user:${message.to}`).emit("newMessage", message);
     } catch (error) {
       const knownErrors = {
@@ -66,6 +90,10 @@ function registerMessageHandlers({
           "No direct conversation exists with this recipient.",
         ACTIVE_MEMBERSHIP_REQUIRED:
           "Both users must be active members of the conversation.",
+        GROUP_ROOM_NOT_FOUND:
+          "The group conversation does not exist.",
+        ROOM_ACCESS_DENIED:
+          "You must be an active member of this group to send messages.",
         CLIENT_ID_REUSED:
           "This clientId was already used for a different message.",
       };

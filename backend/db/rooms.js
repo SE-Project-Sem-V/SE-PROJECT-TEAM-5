@@ -56,20 +56,44 @@ async function createGroupRoom(pool, { name, createdBy, memberIds = [] }) {
   });
 }
 
-async function addGroupMembers(pool, roomId, memberIds) {
+
+async function addGroupMembers(pool, roomId, memberIds, actorId) {
   checkMemberIds(memberIds);
+
+  if (typeof actorId !== "string") {
+    throw new TypeError("actorId must be the authenticated user's UUID.");
+  }
+
   return withTransaction(pool, async (client) => {
-    // Serialize additions and protect the kind check for the duration of the write.
+    // Lock the room before checking ownership or changing membership.
     const { rows: [room] } = await client.query(
-      "SELECT kind FROM chat_rooms WHERE id = $1 FOR UPDATE", [roomId],
+      `SELECT kind, created_by
+       FROM chat_rooms
+       WHERE id = $1
+       FOR UPDATE`,
+      [roomId],
     );
-    if (!room) throw new RoomOperationError("ROOM_NOT_FOUND");
-    // Direct-room membership belongs exclusively to the existing pair workflow.
-    if (room.kind !== "group") throw new RoomOperationError("GROUP_ROOM_REQUIRED");
+
+    if (!room) {
+      throw new RoomOperationError("ROOM_NOT_FOUND");
+    }
+
+    // Direct-room membership remains managed by the existing pair workflow.
+    if (room.kind !== "group") {
+      throw new RoomOperationError("GROUP_ROOM_REQUIRED");
+    }
+
+    // Only the authenticated creator may add members.
+    if (room.created_by.toLowerCase() !== actorId.toLowerCase()) {
+      throw new RoomOperationError("ROOM_CREATOR_REQUIRED");
+    }
+
     await insertGroupMembers(client, roomId, memberIds);
+
     return listRoomMembers(client, roomId);
   });
 }
+
 
 // Read helpers accept either the shared pool or a transaction client. This is a
 // point-in-time check; sending/leaving services must coordinate membership locks.
