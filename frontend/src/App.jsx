@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import AuthScreen from './components/AuthScreen.jsx';
 import UserList from './components/UserList.jsx';
+import GroupList from './components/GroupList.jsx';
 import ChatWindow from './components/ChatWindow.jsx';
 import { getOrCreateDirectConversation, logout } from './api.js';
+import { fetchRoomMessages, listRooms } from './groups.js';
 import { fetchHistory } from './history.js';
 import { appendUnique, mergeHistory } from './messages.js';
 import { connectSocket } from './socket.js';
@@ -38,23 +40,49 @@ function newClientId() {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+// A group is shown in the chat window like a person. Its id is "room:<id>" so it never clashes with a user id.
+function groupPeer(room) {
+  return {
+    id: `room:${room.id}`,
+    roomId: room.id,
+    isGroup: true,
+    username: room.name,
+    displayName: room.name,
+    memberCount: room.members.length,
+    memberNames: Object.fromEntries(room.members.map((m) => [m.id, m.username])),
+  };
+}
+
+// Where a message is sent: a user id for a chat, or { roomId } for a group.
+function targetFor(peer) {
+  return peer.isGroup ? { roomId: peer.roomId } : peer.id;
+}
+
 export default function App() {
   const [session, setSession] = useState(loadSession);
-  const [peer, setPeer] = useState(null);
-  const [messages, setMessages] = useState({}); // { [peerId]: [message] }
-  const [unread, setUnread] = useState({}); // { [peerId]: count }
+  const [peer, setPeer] = useState(null); // the open chat: a user or a group
+  const [messages, setMessages] = useState({}); // { [peer.id]: [message] }
+  const [unread, setUnread] = useState({}); // { [peer.id]: count }
   const [status, setStatus] = useState('connecting');
   const [presence, setPresence] = useState({}); // { [userId]: true | false }
   const [refreshKey, setRefreshKey] = useState(0);
-  const [historyState, setHistoryState] = useState({}); // { [peerId]: 'loading' | 'loaded' | 'error' }
+  const [historyState, setHistoryState] = useState({}); // { [peer.id]: 'loading' | 'loaded' | 'error' }
+  const [tab, setTab] = useState('chats'); // 'chats' | 'groups'
+  const [rooms, setRooms] = useState([]);
+  const [roomsState, setRoomsState] = useState('idle'); // 'idle' | 'loading' | 'ready' | 'error'
   const [notice, setNotice] = useState(null); // { kind: 'ok' | 'warn', text }
   const connection = useRef(null);
   const peerRef = useRef(null);
+  const roomsRef = useRef([]);
   const prevStatus = useRef('connecting');
 
   useEffect(() => {
     peerRef.current = peer;
   }, [peer]);
+
+  useEffect(() => {
+    roomsRef.current = rooms;
+  }, [rooms]);
 
   // Show the number of unread messages in the browser tab title.
   useEffect(() => {
@@ -69,7 +97,7 @@ export default function App() {
     if (status === 'connected' && (previous === 'reconnecting' || previous === 'disconnected')) {
       setNotice({ kind: 'ok', text: 'You are back online.' });
       // Fill in anything that arrived while the connection was down.
-      if (peerRef.current) openConversation(peerRef.current.id);
+      if (peerRef.current) openConversation(peerRef.current);
     } else if (status === 'reconnecting' && previous === 'connected') {
       setNotice({ kind: 'warn', text: 'Connection lost. Trying to reconnect…' });
     } else if (status === 'disconnected') {
@@ -89,9 +117,12 @@ export default function App() {
       onStatus: setStatus,
       onPresence: ({ userId, online }) => setPresence((prev) => ({ ...prev, [userId]: online })),
       onMessage: (msg) => {
-        setMessages((prev) => ({ ...prev, [msg.from]: appendUnique(prev[msg.from] || [], msg) }));
-        if (peerRef.current?.id !== msg.from) {
-          setUnread((prev) => ({ ...prev, [msg.from]: (prev[msg.from] || 0) + 1 }));
+        // One-to-one messages also carry a roomId, so only treat it as a group if we know that room.
+        const room = roomsRef.current.find((r) => r.id === String(msg.roomId));
+        const key = room ? `room:${room.id}` : msg.from;
+        setMessages((prev) => ({ ...prev, [key]: appendUnique(prev[key] || [], msg) }));
+        if (peerRef.current?.id !== key) {
+          setUnread((prev) => ({ ...prev, [key]: (prev[key] || 0) + 1 }));
         }
       },
     });
@@ -102,11 +133,12 @@ export default function App() {
     };
   }, [session]);
 
-  // After every (re)connect, drop old presence data and reload the user list so nothing is stale.
+  // After every (re)connect, drop old presence data, reload the user list and quietly reload the groups.
   useEffect(() => {
     if (status === 'connected') {
       setPresence({});
       setRefreshKey((key) => key + 1);
+      loadRooms(true);
     }
   }, [status]);
 
@@ -124,66 +156,94 @@ export default function App() {
     setMessages({});
     setUnread({});
     setHistoryState({});
+    setRooms([]);
+    setRoomsState('idle');
+    setTab('chats');
     setNotice(null);
   }
 
-  // The backend only accepts messages for a conversation that exists, so open it first (this is safe to repeat).
-  // Then load the saved messages (CHAT-F-011) and merge them with what is already on screen.
-  async function openConversation(peerId) {
-    setHistoryState((prev) => ({ ...prev, [peerId]: 'loading' }));
+  // CHAT-F-008: the groups this user belongs to. "silent" skips the error pop-up (used in the background).
+  async function loadRooms(silent = false) {
+    setRoomsState('loading');
     try {
-      await getOrCreateDirectConversation(peerId, session.token);
-      const history = await fetchHistory(peerId, session.token, session.user.id);
-      setMessages((prev) => ({ ...prev, [peerId]: mergeHistory(history, prev[peerId] || []) }));
-      setHistoryState((prev) => ({ ...prev, [peerId]: 'loaded' }));
+      setRooms(await listRooms(session.token));
+      setRoomsState('ready');
     } catch (err) {
-      setHistoryState((prev) => ({ ...prev, [peerId]: 'error' }));
+      setRoomsState('error');
+      if (!silent) setNotice({ kind: 'warn', text: err.message });
+    }
+  }
+
+  // Load the saved messages (CHAT-F-011) and merge them with what is already on screen.
+  // For a one-to-one chat the backend needs the conversation to exist first, so open it (safe to repeat).
+  async function openConversation(target) {
+    const key = target.id;
+    setHistoryState((prev) => ({ ...prev, [key]: 'loading' }));
+    try {
+      let history;
+      if (target.isGroup) {
+        history = await fetchRoomMessages(target.roomId, session.token);
+      } else {
+        await getOrCreateDirectConversation(target.id, session.token);
+        history = await fetchHistory(target.id, session.token, session.user.id);
+      }
+      setMessages((prev) => ({ ...prev, [key]: mergeHistory(history, prev[key] || []) }));
+      setHistoryState((prev) => ({ ...prev, [key]: 'loaded' }));
+    } catch (err) {
+      setHistoryState((prev) => ({ ...prev, [key]: 'error' }));
       setNotice({ kind: 'warn', text: err.message });
     }
   }
 
-  function handleSelect(user) {
-    setPeer(user);
-    setUnread((prev) => ({ ...prev, [user.id]: 0 }));
-    const state = historyState[user.id];
-    if (!state || state === 'error') openConversation(user.id);
+  function handleSelect(target) {
+    setPeer(target);
+    setUnread((prev) => ({ ...prev, [target.id]: 0 }));
+    const state = historyState[target.id];
+    if (!state || state === 'error') openConversation(target);
   }
 
-  function patchMessage(peerId, id, patch) {
+  function handleGroupCreated(room) {
+    setRooms((prev) => [room, ...prev.filter((r) => r.id !== room.id)]);
+    setRoomsState('ready');
+    handleSelect(groupPeer(room));
+  }
+
+  function patchMessage(key, id, patch) {
     setMessages((prev) => ({
       ...prev,
-      [peerId]: (prev[peerId] || []).map((m) => (m.id === id ? { ...m, ...patch } : m)),
+      [key]: (prev[key] || []).map((m) => (m.id === id ? { ...m, ...patch } : m)),
     }));
   }
 
-  async function deliver(peerId, tempId, content) {
+  async function deliver(key, tempId, content, target) {
     try {
       // tempId doubles as clientId so the server can recognise a retry.
-      const saved = await connection.current.sendMessage(peerId, content, tempId);
-      patchMessage(peerId, tempId, { ...saved, state: 'sent', error: undefined });
+      const saved = await connection.current.sendMessage(target, content, tempId);
+      patchMessage(key, tempId, { ...saved, state: 'sent', error: undefined });
     } catch (err) {
-      patchMessage(peerId, tempId, { state: 'failed', error: err.message });
+      patchMessage(key, tempId, { state: 'failed', error: err.message });
     }
   }
 
   function handleSend(content) {
-    const peerId = peer.id;
+    const key = peer.id;
     const tempId = `tmp-${newClientId()}`;
     const pending = {
       id: tempId,
       from: session.user.id,
-      to: peerId,
+      to: peer.isGroup ? undefined : key,
+      roomId: peer.isGroup ? peer.roomId : undefined,
       content,
       timestamp: new Date().toISOString(),
       state: 'sending',
     };
-    setMessages((prev) => ({ ...prev, [peerId]: [...(prev[peerId] || []), pending] }));
-    deliver(peerId, tempId, content);
+    setMessages((prev) => ({ ...prev, [key]: [...(prev[key] || []), pending] }));
+    deliver(key, tempId, content, targetFor(peer));
   }
 
   function handleRetry(message) {
     patchMessage(peer.id, message.id, { state: 'sending', error: undefined });
-    deliver(peer.id, message.id, message.content);
+    deliver(peer.id, message.id, message.content, targetFor(peer));
   }
 
   if (!session) return <AuthScreen onAuth={handleAuth} />;
@@ -202,15 +262,56 @@ export default function App() {
             Log out
           </button>
         </header>
-        <UserList
-          token={session.token}
-          meId={session.user.id}
-          selectedId={peer?.id}
-          unread={unread}
-          presence={presence}
-          refreshKey={refreshKey}
-          onSelect={handleSelect}
-        />
+
+        <div className="tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'chats'}
+            className={`tab ${tab === 'chats' ? 'on' : ''}`}
+            onClick={() => setTab('chats')}
+            data-testid="tab-chats"
+          >
+            Chats
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={tab === 'groups'}
+            className={`tab ${tab === 'groups' ? 'on' : ''}`}
+            onClick={() => {
+              setTab('groups');
+              loadRooms();
+            }}
+            data-testid="tab-groups"
+          >
+            Groups
+          </button>
+        </div>
+
+        {tab === 'chats' ? (
+          <UserList
+            token={session.token}
+            meId={session.user.id}
+            selectedId={peer?.id}
+            unread={unread}
+            presence={presence}
+            refreshKey={refreshKey}
+            onSelect={handleSelect}
+          />
+        ) : (
+          <GroupList
+            rooms={rooms}
+            state={roomsState}
+            token={session.token}
+            me={session.user}
+            selectedId={peer?.id}
+            unread={unread}
+            onSelect={(room) => handleSelect(groupPeer(room))}
+            onCreated={handleGroupCreated}
+            onRetry={() => loadRooms()}
+          />
+        )}
       </aside>
       <main className="main">
         <ChatWindow
@@ -223,7 +324,7 @@ export default function App() {
           onRetry={handleRetry}
           onBack={() => setPeer(null)}
           historyState={peer ? historyState[peer.id] : undefined}
-          onReloadHistory={() => openConversation(peer.id)}
+          onReloadHistory={() => openConversation(peer)}
         />
       </main>
       {notice && (

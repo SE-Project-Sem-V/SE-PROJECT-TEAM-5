@@ -50,8 +50,8 @@ export default function ChatWindow({
           <h2>Hi, {me.displayName || me.username}</h2>
           <p>Start a conversation in three steps:</p>
           <ol className="steps">
-            <li>Search for a user in the list.</li>
-            <li>Click their name to open the chat.</li>
+            <li>Search for a user in the list, or open the Groups tab.</li>
+            <li>Click a name to open the chat.</li>
             <li>Type your message and press Enter.</li>
           </ol>
         </div>
@@ -74,10 +74,17 @@ export default function ChatWindow({
   return (
     <>
       <header className="chat-head">
-        <button type="button" className="back" onClick={onBack} aria-label="Back to users" data-testid="back-button">
+        <button type="button" className="back" onClick={onBack} aria-label="Back to the list" data-testid="back-button">
           ←
         </button>
-        <span>{peerName}</span>
+        <span className="chat-title">
+          <span>{peerName}</span>
+          {peer.isGroup && (
+            <span className="chat-sub" data-testid="group-members">
+              {peer.memberCount} member{peer.memberCount === 1 ? '' : 's'}
+            </span>
+          )}
+        </span>
       </header>
       {offline && (
         <div className="banner" role="status" data-testid="connection-banner">
@@ -112,6 +119,11 @@ export default function ChatWindow({
               data-testid="message-item"
               className={`msg ${m.from === me.id ? 'mine' : 'theirs'} ${m.state === 'failed' ? 'failed' : ''}`}
             >
+              {peer.isGroup && m.from !== me.id && (
+                <span className="sender" data-testid="message-sender">
+                  {peer.memberNames?.[m.from] ?? 'Member'}
+                </span>
+              )}
               {m.content}
               <span className="meta">
                 {m.state === 'sending' && 'Sending…'}

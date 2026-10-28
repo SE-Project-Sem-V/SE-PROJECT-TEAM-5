@@ -3,8 +3,9 @@ import { API_URL, EVENTS, USE_MOCK, assertSecureTransport } from './config.js';
 import { normalizeMessage, normalizePresence } from './messages.js';
 import { RECONNECT_OPTIONS, createReconnectManager } from './reconnectManager.js';
 
-// Returns { sendMessage(to, text, clientId) -> Promise<message>, disconnect() }.
-// handlers: { onMessage(message), onStatus(status) }
+// Returns { sendMessage(target, text, clientId) -> Promise<message>, disconnect() }.
+// target is a user id (one-to-one chat) or { roomId } (group chat).
+// handlers: { onMessage(message), onStatus(status), onPresence(update) }
 export function connectSocket(token, user, handlers) {
   return USE_MOCK ? mockConnection(user, handlers) : realConnection(token, user, handlers);
 }
@@ -13,6 +14,8 @@ function ackError(res) {
   const e = res?.error;
   return (typeof e === 'string' ? e : e?.message) || res?.message || 'The server rejected the message.';
 }
+
+const targetPayload = (target) => (typeof target === 'string' ? { to: target } : target);
 
 function realConnection(token, user, { onMessage, onStatus, onPresence }) {
   assertSecureTransport();
@@ -28,14 +31,20 @@ function realConnection(token, user, { onMessage, onStatus, onPresence }) {
   });
 
   return {
-    sendMessage: (to, text, clientId) =>
+    sendMessage: (target, text, clientId) =>
       new Promise((resolve, reject) => {
         // The client never sends a timestamp: the server sets it (CHAT-F-010).
         // clientId lets the server spot a retry of a message it already stored.
-        socket.timeout(5000).emit(EVENTS.SEND, { to, text, clientId }, (err, res) => {
+        socket.timeout(5000).emit(EVENTS.SEND, { ...targetPayload(target), text, clientId }, (err, res) => {
           if (err) return reject(new Error('The server did not confirm the message. Try sending it again.'));
           if (res?.ok === false || res?.status === 'error') return reject(new Error(ackError(res)));
-          return resolve(normalizeMessage(res?.message ?? res ?? {}, { from: user.id, to, content: text }));
+          return resolve(
+            normalizeMessage(res?.message ?? res ?? {}, {
+              from: user.id,
+              to: typeof target === 'string' ? target : undefined,
+              content: text,
+            }),
+          );
         });
       }),
     disconnect: () => {
@@ -59,15 +68,36 @@ function mockConnection(user, { onMessage, onStatus, onPresence }) {
   );
 
   return {
-    sendMessage: (to, text) =>
+    sendMessage: (target, text) =>
       new Promise((resolve) => {
+        const isGroup = typeof target !== 'string';
         timers.push(
           setTimeout(() => {
             const now = Date.now();
-            resolve(normalizeMessage({ id: `m-${now}`, userId: user.id, to, text, timestamp: now }));
+            resolve(
+              normalizeMessage({
+                id: `m-${now}`,
+                userId: user.id,
+                to: isGroup ? undefined : target,
+                roomId: isGroup ? target.roomId : undefined,
+                text,
+                timestamp: now,
+              }),
+            );
+            // Demo reply: in a group it comes from alice, in a chat from the person you wrote to.
             timers.push(
               setTimeout(
-                () => onMessage(normalizeMessage({ id: `m-${now}-reply`, userId: to, to: user.id, text: `Echo: ${text}`, timestamp: Date.now() })),
+                () =>
+                  onMessage(
+                    normalizeMessage({
+                      id: `m-${now}-reply`,
+                      userId: isGroup ? 'u1' : target,
+                      to: isGroup ? undefined : user.id,
+                      roomId: isGroup ? target.roomId : undefined,
+                      text: `Echo: ${text}`,
+                      timestamp: Date.now(),
+                    }),
+                  ),
                 700,
               ),
             );
