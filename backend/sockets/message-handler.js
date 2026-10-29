@@ -20,6 +20,7 @@ function registerMessageHandlers({
   pool,
   maxMessageLength,
   logger = console,
+  onDisconnect,
 }) {
   const senderId = socket.data.user.id;
 
@@ -129,6 +130,10 @@ function registerMessageHandlers({
 
   socket.on("disconnect", (reason) => {
     logger.log("Client disconnected:", socket.id, reason);
+
+    if (typeof onDisconnect === "function") {
+      onDisconnect();
+    }
   });
 }
 
