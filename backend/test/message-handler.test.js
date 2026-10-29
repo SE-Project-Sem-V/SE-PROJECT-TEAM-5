@@ -202,6 +202,59 @@ test(
         },
       );
 
+      await t.test(
+        "CHATAPP-22 rejects oversized messages without persisting them",
+        async () => {
+          const clientId = `oversized-${randomUUID()}`;
+          const oversizedText = "x".repeat(1001);
+
+          const response = await sendMessage(alice, {
+            to: USERS[1][0],
+            text: oversizedText,
+            clientId,
+          });
+
+          assert.equal(response.ok, false);
+          assert.equal(response.code, "INVALID_MESSAGE");
+          assert.equal(response.message, response.error);
+          assert.match(response.error, /at most 1000 characters/i);
+
+          const result = await pool.query(
+            `SELECT id FROM messages
+             WHERE sender_id = $1 AND client_id = $2`,
+            [USERS[0][0], clientId],
+          );
+
+          assert.equal(result.rowCount, 0);
+        },
+      );
+
+      await t.test(
+        "CHATAPP-22 rejects malformed payloads without persisting them",
+        async () => {
+          const clientId = `malformed-${randomUUID()}`;
+
+          const response = await sendMessage(alice, {
+            to: USERS[1][0],
+            text: "This should not be saved",
+            clientId,
+            senderId: USERS[0][0],
+          });
+
+          assert.equal(response.ok, false);
+          assert.equal(response.code, "INVALID_MESSAGE");
+          assert.equal(response.message, response.error);
+
+          const result = await pool.query(
+            `SELECT id FROM messages
+             WHERE sender_id = $1 AND client_id = $2`,
+            [USERS[0][0], clientId],
+          );
+
+          assert.equal(result.rowCount, 0);
+        },
+      );
+
       await t.test("rejects a nonexistent recipient", async () => {
         const response = await sendMessage(alice, {
           to: randomUUID(),
