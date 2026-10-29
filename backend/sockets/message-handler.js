@@ -1,4 +1,4 @@
-
+﻿
 const { formatDatabaseError } = require("../db/config");
 const { AppError, ERROR_CATALOGUE ,normalizeError, socketErrorResponse, messageValidationError } = require("../errors");
 const {
@@ -63,15 +63,26 @@ function registerMessageHandlers({
           payload.text,
           payload.clientId,
         );
-
         callback({ ok: true, message: result.message });
 
-        // Only active group members are selected for delivery.
-        for (const memberId of result.recipientIds) {
-          io.to(`user:${memberId}`).emit("newMessage", result.message);
+        // Match the frontend contract for group-message events.
+        const broadcastMessage = {
+          id: result.message.id,
+          from: result.message.userId,
+          roomId: result.message.roomId,
+          content: result.message.text,
+          timestamp: result.message.timestamp,
+        };
+
+        // A retry receives the original acknowledgement but isn't broadcast again.
+        if (result.created) {
+          for (const memberId of result.recipientIds) {
+            io.to(`user:${memberId}`).emit("newMessage", broadcastMessage);
+          }
         }
 
         return;
+
       }
 
       const message = await saveDirectMessage(

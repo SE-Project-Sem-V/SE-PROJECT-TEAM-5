@@ -1,4 +1,4 @@
-
+﻿
 const assert = require("node:assert/strict");
 const { randomUUID, randomBytes } = require("node:crypto");
 const http = require("node:http");
@@ -15,9 +15,9 @@ require("dotenv").config({
 
 const { databaseConfig, testDatabaseEnvironment } = require("../db/config");
 const { createPool, withTransaction } = require("../db/pool");
-const { migrate } = require("../db/migrate");
-const { seed, USERS, DIRECT_ROOM } = require("../db/seed");
+const { seed, USERS, DIRECT_ROOM, GROUP_ROOM } = require("../db/seed");
 const { createChatServer } = require("../server");
+const { migrate } = require("../db/migrate");
 
 const waitForEvent = (socket, event, timeout = 3000) =>
   new Promise((resolve, reject) => {
@@ -81,6 +81,7 @@ test(
     let chat;
     let alice;
     let bob;
+    let charlie;
 
     try {
       const { rows: [database] } = await admin.query(
@@ -119,6 +120,11 @@ test(
 
       bob = await connect(
         jwt.sign({ sub: USERS[1][0] }, jwtSecret, { expiresIn: "2m" }),
+        url,
+      );
+
+      charlie = await connect(
+        jwt.sign({ sub: USERS[2][0] }, jwtSecret, { expiresIn: "2m" }),
         url,
       );
 
@@ -237,6 +243,93 @@ test(
         assert.equal(conflicting.message, conflicting.error);
         assert.match(conflicting.error, /clientId/i);
       });
+    await t.test(
+        "CHATAPP-16 broadcasts persisted group messages to active members",
+      async () => {
+        const clientId = `group-${randomUUID()}`;
+        const payload = {
+          roomId: GROUP_ROOM,
+          text: "Hello group members",
+          clientId,
+        };
+
+        // Both connected recipients should receive the message.
+        const bobIncoming = waitForEvent(bob, "newMessage");
+        const charlieIncoming = waitForEvent(charlie, "newMessage");
+
+        const response = await sendMessage(alice, payload);
+
+        assert.equal(response.ok, true);
+        assert.equal(response.message.roomId, GROUP_ROOM);
+        assert.equal(response.message.userId, USERS[0][0]);
+        assert.equal(response.message.text, payload.text);
+
+        const expectedBroadcast = {
+          id: response.message.id,
+          from: USERS[0][0],
+          roomId: GROUP_ROOM,
+          content: payload.text,
+          timestamp: response.message.timestamp,
+        };
+
+        const [bobMessage, charlieMessage] = await Promise.all([
+          bobIncoming,
+          charlieIncoming,
+        ]);
+
+        assert.deepEqual(bobMessage, expectedBroadcast);
+        assert.deepEqual(charlieMessage, expectedBroadcast);
+
+        // Verify the message was persisted exactly once.
+        const { rows } = await pool.query(
+          `SELECT id FROM messages
+          WHERE sender_id = $1 AND client_id = $2`,
+          [USERS[0][0], clientId],
+        );
+
+        assert.equal(rows.length, 1);
+        assert.equal(rows[0].id, response.message.id);
+
+        // Retrying the same clientId must not broadcast again.
+        let bobDuplicateCount = 0;
+        let charlieDuplicateCount = 0;
+
+        const countBob = () => {
+          bobDuplicateCount += 1;
+        };
+        const countCharlie = () => {
+          charlieDuplicateCount += 1;
+        };
+
+        bob.on("newMessage", countBob);
+        charlie.on("newMessage", countCharlie);
+
+        try {
+          const retryResponse = await sendMessage(alice, payload);
+
+          assert.equal(retryResponse.ok, true);
+          assert.deepEqual(retryResponse.message, response.message);
+
+          // Allow any unexpected duplicate event to arrive.
+          await new Promise((resolve) => setTimeout(resolve, 150));
+
+          assert.equal(bobDuplicateCount, 0);
+          assert.equal(charlieDuplicateCount, 0);
+        } finally {
+          bob.off("newMessage", countBob);
+          charlie.off("newMessage", countCharlie);
+        }
+
+        const { rows: retryRows } = await pool.query(
+          `SELECT id FROM messages
+           WHERE sender_id = $1 AND client_id = $2`,
+          [USERS[0][0], clientId],
+        );
+
+        assert.equal(retryRows.length, 1);
+      },
+    );
+
 
       await t.test("inactive membership returns ROOM_FORBIDDEN without storing a message", async () => {
         await pool.query("UPDATE room_members SET left_at = now() WHERE room_id = $1 AND user_id = $2",
@@ -255,6 +348,7 @@ test(
     } finally {
       if (alice) alice.disconnect();
       if (bob) bob.disconnect();
+      if (charlie) charlie.disconnect();
 
       if (chat) await chat.close();
       if (pool) await pool.end();
