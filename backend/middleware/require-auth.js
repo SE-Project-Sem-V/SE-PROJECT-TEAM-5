@@ -1,11 +1,11 @@
 const jwt = require("jsonwebtoken");
+const { AppError, sendHttpError } = require("../errors");
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-function unauthorized(res) {
-  return res.set("WWW-Authenticate", "Bearer").status(401).json({
-    status: "error", message: "Authentication required.",
-  });
+function unauthorized(res, code = "AUTH_INVALID") {
+  res.set("WWW-Authenticate", "Bearer");
+  return sendHttpError(res, new AppError(code, "http"));
 }
 
 // HTTP authentication only. Socket.IO retains its existing verifier and policy.
@@ -14,6 +14,7 @@ function requireAuth({ pool, jwtSecret }) {
     const authorizationCount = req.rawHeaders.filter((_, index) =>
       index % 2 === 0 && req.rawHeaders[index].toLowerCase() === "authorization").length;
     const match = /^Bearer[ \t]+(\S+)$/i.exec(req.get("Authorization") || "");
+    if (authorizationCount === 0) return unauthorized(res, "AUTH_REQUIRED");
     if (authorizationCount !== 1 || !match) return unauthorized(res);
 
     let payload;
@@ -25,8 +26,8 @@ function requireAuth({ pool, jwtSecret }) {
           typeof payload.sub !== "string" || !UUID_PATTERN.test(payload.sub)) {
         return unauthorized(res);
       }
-    } catch {
-      return unauthorized(res);
+    } catch (error) {
+      return unauthorized(res, error instanceof jwt.TokenExpiredError ? "AUTH_EXPIRED" : "AUTH_INVALID");
     }
 
     try {

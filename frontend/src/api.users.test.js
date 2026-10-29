@@ -69,4 +69,13 @@ describe('CHATAPP-10 real user-search API adapter', () => {
     fetch.mockRejectedValue(new Error(privateValue));
     await expect(searchUsers('ali', crypto.randomUUID())).rejects.toThrow('Cannot reach the server. Check your connection and try again.');
   });
+
+  it.each([
+    [401, 'AUTH_EXPIRED', 'Authentication required.'],
+    [400, 'INVALID_INPUT', 'Invalid request.'],
+    [500, 'INTERNAL_ERROR', 'Internal server error.'],
+  ])('reads CHATAPP-21 additive codes without changing HTTP %i messages', async (status, code, message) => {
+    fetch.mockResolvedValue(reply({ status: 'error', code, message }, status));
+    await expect(searchUsers('ali', crypto.randomUUID())).rejects.toThrow(message);
+  });
 });

@@ -3,129 +3,30 @@ const express = require("express");
 const http = require("node:http");
 const path = require("node:path");
 const cors = require("cors");
-const jwt = require("jsonwebtoken");
 const { Server } = require("socket.io");
-require("dotenv").config({ path: path.join(__dirname, ".env"), quiet: true });
+
+require("dotenv").config({
+  path: path.join(__dirname, ".env"),
+  quiet: true,
+});
+
 const { createAuthRouter } = require("./routes/auth");
-
-const { createPool, withTransaction } = require("./db/pool");
+const { createPool } = require("./db/pool");
 const { formatDatabaseError } = require("./db/config");
-const { validateJwtSecret, SecurityConfigurationError, JWT_SECRET_ERROR } = require("./security/config");
-const { createHttpErrorHandler, notFound } = require("./middleware/error-handler");
+const {
+  validateJwtSecret,
+  SecurityConfigurationError,
+  JWT_SECRET_ERROR,
+} = require("./security/config");
+const {
+  createHttpErrorHandler,
+  notFound,
+} = require("./middleware/error-handler");
 const { createUsersRouter } = require("./routes/users");
-
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function acknowledgeError(callback, message) {
-  if (typeof callback === "function") {
-    callback({ ok: false, error: message });
-  }
-}
-
-function validateMessage(payload, senderId, maxLength) {
-  if (!UUID_PATTERN.test(senderId)) {
-    return "This account cannot send database messages.";
-  }
-
-  if (!payload || typeof payload !== "object") {
-    return "Invalid message payload.";
-  }
-
-  const { to, text, clientId } = payload;
-
-  if (typeof to !== "string" || !UUID_PATTERN.test(to)) {
-    return "A valid recipient is required.";
-  }
-
-  if (to === senderId) {
-    return "You cannot send a direct message to yourself.";
-  }
-
-  if (typeof text !== "string" || !text.trim() || text.length > maxLength) {
-    return `Message must contain text and be at most ${maxLength} characters.`;
-  }
-
-  if (
-    typeof clientId !== "string" ||
-    !clientId.trim() ||
-    clientId.length > 128
-  ) {
-    return "A valid clientId is required.";
-  }
-
-  return null;
-}
-
-async function saveDirectMessage(pool, senderId, recipientId, text, clientId) {
-  return withTransaction(pool, async (client) => {
-    const roomResult = await client.query(
-      `SELECT id
-       FROM chat_rooms
-       WHERE kind = 'direct'
-         AND direct_user_low = LEAST($1::uuid, $2::uuid)
-         AND direct_user_high = GREATEST($1::uuid, $2::uuid)`,
-      [senderId, recipientId],
-    );
-
-    if (roomResult.rowCount !== 1) {
-      throw new Error("DIRECT_ROOM_NOT_FOUND");
-    }
-
-    const roomId = roomResult.rows[0].id;
-
-    const membershipResult = await client.query(
-      `SELECT user_id, left_at
-       FROM room_members
-       WHERE room_id = $1
-         AND user_id = ANY($2::uuid[])
-       ORDER BY user_id
-       FOR UPDATE`,
-      [roomId, [senderId, recipientId]],
-    );
-
-    if (
-      membershipResult.rowCount !== 2 ||
-      membershipResult.rows.some((member) => member.left_at !== null)
-    ) {
-      throw new Error("ACTIVE_MEMBERSHIP_REQUIRED");
-    }
-
-    const insertResult = await client.query(
-      `INSERT INTO messages (room_id, sender_id, content, client_id)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (sender_id, client_id) DO NOTHING
-       RETURNING id, room_id, sender_id, content, created_at`,
-      [roomId, senderId, text, clientId],
-    );
-
-    let row = insertResult.rows[0];
-
-    if (!row) {
-      const existingResult = await client.query(
-        `SELECT id, room_id, sender_id, content, created_at
-         FROM messages
-         WHERE sender_id = $1 AND client_id = $2`,
-        [senderId, clientId],
-      );
-
-      row = existingResult.rows[0];
-
-      if (!row || row.room_id !== roomId || row.content !== text) {
-        throw new Error("CLIENT_ID_REUSED");
-      }
-    }
-
-    return {
-      id: row.id,
-      roomId: row.room_id,
-      userId: row.sender_id,
-      to: recipientId,
-      text: row.content,
-      timestamp: new Date(row.created_at).toISOString(),
-    };
-  });
-}
+const { createRoomsRouter } = require("./routes/rooms");
+const { createSocketAuthMiddleware } = require("./sockets/socket-auth");
+const { registerMessageHandlers } = require("./sockets/message-handler");
+const { saveDirectMessage } = require("./services/message-service");
 
 function createChatServer({
   pool,
@@ -163,106 +64,23 @@ function createChatServer({
   });
 
   app.use("/api/users", createUsersRouter({ pool, jwtSecret }));
+  app.use("/api/rooms", createRoomsRouter({ pool, jwtSecret }));
 
   // Register future HTTP routes above these final response/error handlers.
   app.use(notFound);
   app.use(createHttpErrorHandler(logger));
 
-  io.use((socket, next) => {
-    const token = socket.handshake.auth?.token;
+  // Authenticate Socket.IO connections using JWT.
+  io.use(createSocketAuthMiddleware(jwtSecret));
 
-    if (typeof token !== "string" || !token) {
-      return next(new Error("Authentication required"));
-    }
-
-    try {
-      const payload = jwt.verify(token, jwtSecret);
-
-      if (
-        !payload ||
-        typeof payload !== "object" ||
-        typeof payload.sub !== "string" ||
-        !payload.sub
-      ) {
-        return next(new Error("Invalid token payload"));
-      }
-
-      socket.data.user = { id: payload.sub };
-      next();
-    } catch {
-      next(new Error("Invalid or expired token"));
-    }
-  });
-
+  // Delegate connection and event responsibilities to the socket module.
   io.on("connection", (socket) => {
-    const senderId = socket.data.user.id;
-
-    logger.log("Authenticated client connected:", senderId);
-    socket.join(`user:${senderId}`);
-
-    socket.on("protected:ping", (callback) => {
-      if (typeof callback !== "function") return;
-
-      callback({
-        status: "success",
-        message: "pong",
-        userId: senderId,
-      });
-    });
-
-    socket.on("sendMessage", async (payload, callback) => {
-      if (typeof callback !== "function") return;
-
-      const validationError = validateMessage(
-        payload,
-        senderId,
-        maxMessageLength,
-      );
-
-      if (validationError) {
-        return acknowledgeError(callback, validationError);
-      }
-
-      try {
-        const message = await saveDirectMessage(
-          pool,
-          senderId,
-          payload.to,
-          payload.text,
-          payload.clientId,
-        );
-
-        // This acknowledgement follows a successful database commit.
-        callback({ ok: true, message });
-        io.to(`user:${message.to}`).emit("newMessage", message);
-      } catch (error) {
-        const knownErrors = {
-          DIRECT_ROOM_NOT_FOUND:
-            "No direct conversation exists with this recipient.",
-          ACTIVE_MEMBERSHIP_REQUIRED:
-            "Both users must be active members of the conversation.",
-          CLIENT_ID_REUSED:
-            "This clientId was already used for a different message.",
-        };
-
-        if (knownErrors[error.message]) {
-          return acknowledgeError(callback, knownErrors[error.message]);
-        }
-
-        logger.error(
-          "[messages] Failed to save message:",
-          formatDatabaseError(error),
-        );
-
-        acknowledgeError(
-          callback,
-          "Message could not be saved. Please try again.",
-        );
-      }
-    });
-
-    socket.on("disconnect", (reason) => {
-      logger.log("Client disconnected:", socket.id, reason);
+    registerMessageHandlers({
+      io,
+      socket,
+      pool,
+      maxMessageLength,
+      logger,
     });
   });
 
@@ -270,6 +88,7 @@ function createChatServer({
     app,
     server,
     io,
+
     listen(port = 0, host = "127.0.0.1") {
       return new Promise((resolve, reject) => {
         const onError = (error) => {
@@ -287,6 +106,7 @@ function createChatServer({
         server.listen(port, host);
       });
     },
+
     async close() {
       if (server.listening) {
         await new Promise((resolve, reject) => {
@@ -340,8 +160,12 @@ async function main() {
 
 if (require.main === module) {
   main().catch((error) => {
-    console.error("Chat backend failed to start:",
-      error instanceof SecurityConfigurationError ? JWT_SECRET_ERROR : formatDatabaseError(error));
+    console.error(
+      "Chat backend failed to start:",
+      error instanceof SecurityConfigurationError
+        ? JWT_SECRET_ERROR
+        : formatDatabaseError(error),
+    );
     process.exitCode = 1;
   });
 }

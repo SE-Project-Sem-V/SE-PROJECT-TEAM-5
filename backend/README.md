@@ -272,10 +272,11 @@ the database's canonical UUID as the caller identity. It never accepts a caller
 ID or token from query parameters. There is no token issuance or logout/revocation
 implementation here. CHATAPP-7/24 must issue expiring tokens with the same private
 key and UUID subject and coordinate any future algorithm/revocation policy.
-The existing WebSocket verifier is unchanged.
+The existing WebSocket verification policy is unchanged; CHATAPP-21 adds error codes.
 
 Authentication failures use HTTP 401, `WWW-Authenticate: Bearer`, and
-`{"status":"error","message":"Authentication required."}`. Invalid input uses
+`{"status":"error","code":"AUTH_REQUIRED","message":"Authentication required."}`
+(or `AUTH_INVALID`/`AUTH_EXPIRED` as applicable). Invalid input uses
 400 with a fixed validation message. Database/unexpected failures flow through
 CHATAPP-26's final handler and return 500 with `Internal server error.`; logs contain
 only its fixed label/status. Directory responses and errors use `Cache-Control:
@@ -286,6 +287,62 @@ presence as unknown and displays "Presence unavailable". CHATAPP-7 is still need
 for real registration/login through the UI; mock tokens cannot access this endpoint.
 CHATAPP-11 owns creating/reusing direct rooms and memberships before sending to a
 new recipient. Existing messaging still requires a direct room with active members.
+
+### Group room database operations (CHATAPP-50)
+
+`db/rooms.js` reuses the existing tables and `withTransaction()`; it creates no
+pool, table or migration. Its exports are trusted database primitives, **not**
+HTTP endpoints or authorization checks:
+
+| Helper | Behavior |
+| --- | --- |
+| `createGroupRoom(pool, { name, createdBy, memberIds = [] })` | Atomically inserts a group and active memberships for its creator and selected users. Returns the room's `id`, `kind`, `name`, `created_by`, `created_at` and active `members`. Existing schema constraints validate names and user references. |
+| `addGroupMembers(pool, roomId, memberIds)` | Atomically adds a batch and returns the full active member list. Locks the room and existing requested memberships. Repeated active memberships preserve their timestamps; repeated UUIDs, including different casing, are deduplicated. |
+| `isActiveMember(db, roomId, userId)` | Returns a Boolean using `left_at IS NULL`; absent rooms/users/memberships return false. Accepts a pool or transaction client. |
+| `listRoomMembers(db, roomId, { includeDeparted = false } = {})` | Returns `id`, `username`, `joined_at`, `left_at`, ordered by lowercase username with C collation, then UUID. Departed memberships require explicit opt-in; unknown rooms return an empty list. Accepts a pool or transaction client. |
+
+Writes use bound parameters and roll back together on failure. They never update
+an existing membership. `addGroupMembers` raises `RoomOperationError` with code
+`ROOM_NOT_FOUND`, `GROUP_ROOM_REQUIRED` (for any direct room), or
+`MEMBER_REJOIN_REQUIRED` (if any requested member has departed). A rejected batch
+adds nobody and preserves departed records. PostgreSQL validation/FK errors
+propagate to the caller; use the existing sanitized error handling rather than
+returning/logging raw errors. Active membership reads are point-in-time checks,
+not a substitute for transactional membership locks when sending messages.
+
+The merged `frontend/src/groups.js` explicitly labels its API contract as assumed:
+
+- `GET /api/rooms` -> `{ rooms: [{ id, name, members: [{ id, username }] }] }`,
+  restricted to the caller's groups.
+- `POST /api/rooms` with `{ name, memberIds }` -> `{ room: { id, name, members } }`.
+  The authenticated identity must supply `createdBy`; it is not in the payload.
+- `GET /api/rooms/:roomId/messages` -> `{ messages: [{ id, from, roomId, content, timestamp }] }`.
+- Socket input `sendMessage { roomId, text, clientId }`, output `newMessage` with
+  `roomId`. The existing backend handler currently accepts direct recipients only.
+
+`NewGroupForm.jsx` trims names, limits them to 100 characters, excludes the creator
+from selection and requires at least one selected user. `GroupList.jsx` uses
+`members.length` for its count. The creation helper's result can supply the
+assumed POST response; the route should explicitly project its public API fields.
+Room-directory queries, group HTTP routes and group message handling remain with
+the integrating tasks (frontend references CHATAPP-15/16). No separate invite or
+rejoin endpoint contract is specified by these frontend files.
+
+**Decisions needed from Anand before service integration:** who may create groups,
+invite/add/remove members or inspect membership/history; whether invitations need
+acceptance; minimum/maximum group size; whether departed members may rejoin, who
+may authorize that and what history they may see. These helpers enforce no
+invented permission/size policy and can store a creator-only group; the service
+must apply the agreed rules before calling them. Until rejoin behavior is agreed,
+additions of departed members explicitly fail.
+
+Inspection found schema/seed fixtures and teammate direct-room operations, but no
+existing reusable group database operations in the checked local Git refs. The
+existing direct-conversation route in `routes/users.js` uses an upsert that resets
+`left_at = NULL`. That pre-existing direct reactivation behavior needs an explicit
+decision from Anand and its owner; CHATAPP-50 leaves that route unchanged. The new
+group helper rejects every direct room, including attempts to add a third user.
+There is no new database-wide trigger constraining raw membership SQL.
 
 ### Rooms and messaging handoff
 
@@ -333,7 +390,8 @@ CHATAPP-7 provides real login. CHATAPP-10 changes no socket event or message con
 ## Tests and isolation
 
 `npm test` needs no PostgreSQL or configured JWT key. It runs configuration,
-credential-security and user-search HTTP tests: Argon2id salt/verification/input handling, JWT key
+credential-security, authentication, user-search, message-validation and standardized-error tests:
+Argon2id salt/verification/input handling, JWT key
 validation/startup failures, real HTTP error redaction in development/production,
 WebSocket authentication/protected acknowledgements, sanitized message failure
 responses, mandatory verified TLS, test/seed safety gates and bounded TCP failures.
@@ -346,12 +404,12 @@ configuration, and a separate pre-created `TEST_PGDATABASE` ending in `_test`.
 It deliberately exits nonzero if prerequisites are missing; it never silently
 substitutes mocks or uses `PGDATABASE`.
 
-This command runs `test/database.test.js`, `test/message-handler.test.js`, and
-`test/user-search.database.test.js`. HTTP and messaging tests generate temporary
+This command runs `test/database.test.js`, `test/message-handler.test.js`,
+`test/user-search.database.test.js`, and `test/rooms.database.test.js`. HTTP and messaging tests generate temporary
 signing keys; they do not need a deployment `JWT_SECRET`.
 
 Each suite checks the actual target name, creates a random `chatapp_test_<uuid>`
-or `chatapp_message_test_<uuid>` or `chatapp_search_test_<uuid>` schema, sets an exclusive search path and drops
+or `chatapp_message_test_<uuid>`, `chatapp_search_test_<uuid>` or `chatapp_rooms_test_<uuid>` schema, sets an exclusive search path and drops
 only its own schema afterward. The database suite
 tests connectivity, real migrations/concurrent migration runs, checksum tampering,
 DDL rollback, repeatable/concurrent seeds, preserved data/hashes, PK/FK/username
@@ -367,7 +425,103 @@ case-insensitive partial matching, caller exclusion, empty/no-match results,
 literal wildcard and SQL-injection inputs, account existence, public-field
 projection, deterministic ordering and the 20-result cap. It creates/deletes only
 its own temporary fixture data and schema, never development or shared records.
+The room suite tests atomic group/creator creation, duplicate/concurrent additions,
+invalid references and rollback, schema name constraints, parameterized names,
+active/departed membership, stable public member listings and direct-room rejection.
 Database-server restart durability is a separate manual check below.
+
+## Standardized errors (CHATAPP-21 / CHAT-F-015)
+
+`errors.js` owns the public catalogue, `AppError`, safe normalization and transport
+builders. Messages come from the catalogue or named controlled variants, never
+from submitted values or arbitrary exceptions. The normalizer recognizes only
+errors constructed by that module; forged `code`, `status`, `message` fields or
+an `AppError` prototype do not make an exception public. Unknown failures become
+`INTERNAL_ERROR`. Raw SQLSTATE codes are not a public API.
+
+HTTP failures preserve their status and existing message fields:
+
+```json
+{"status":"error","code":"AUTH_REQUIRED","message":"Authentication required."}
+```
+
+Socket.IO connection rejections still use `connect_error` with a controlled
+`Error.message`. They also carry `error.data = { code, message }`. Existing texts
+such as `Authentication required` and `Invalid or expired token` are preserved.
+`AUTH_EXPIRED` is selected only for `jsonwebtoken.TokenExpiredError`, after normal
+JWT verification; other JWT failures use `AUTH_INVALID`. HTTP authentication keeps
+its generic `Authentication required.` text and Bearer header for all three codes.
+
+Failed message acknowledgements use:
+
+```json
+{"ok":false,"code":"ROOM_FORBIDDEN","message":"Both users must be active members of the conversation.","error":"Both users must be active members of the conversation."}
+```
+
+`error` remains a string compatibility alias generated from the same source as
+`message`. Successful ACKs remain exactly `{ ok: true, message: persistedMessage }`.
+Persistence, delivery events, authoritative timestamps, retries and membership
+authorization are unchanged. CHATAPP-27's validator still returns a controlled
+string or `null`; all its rules remain intact. Its failures use `INVALID_MESSAGE`.
+
+| Public code | HTTP status / equivalent | Meaning |
+|---|---|---|
+| `AUTH_REQUIRED` | 401 | Required authentication absent |
+| `AUTH_INVALID` | 401 | Invalid authentication, subject or missing HTTP account |
+| `AUTH_EXPIRED` | 401 | Verified token expiration |
+| `INVALID_CREDENTIALS` | 401 | Unknown username or incorrect password, indistinguishable |
+| `INVALID_INPUT` | 400 | Invalid auth/search/conversation input or malformed request size/abort |
+| `INVALID_MESSAGE` | 400 equivalent | Existing message payload rules rejected the input |
+| `INVALID_JSON` | 400 | Malformed JSON |
+| `PAYLOAD_TOO_LARGE` | 413 | HTTP request body exceeds the parser limit |
+| `UNSUPPORTED_ENCODING` | 415 | Unsupported request encoding or charset |
+| `USERNAME_TAKEN` | 409 | Username conflict during registration |
+| `RECIPIENT_NOT_FOUND` | 404 | Conversation creation establishes recipient absence |
+| `CONVERSATION_NOT_FOUND` | 404 equivalent | Sending found no direct room for the pair |
+| `ROOM_FORBIDDEN` | 403 equivalent | Both participants are not active members |
+| `CLIENT_ID_CONFLICT` | 409 equivalent | Retry ID reused with different room/content |
+| `NOT_FOUND` | 404 | Unknown HTTP route |
+| `INTERNAL_ERROR` | 500 equivalent | Unrecognized server/database failure |
+
+Socket ACKs do not acquire an HTTP status field. The unexpected message-save
+variant retains `Message could not be saved. Please try again.`; HTTP unexpected
+failures retain `Internal server error.`. Clients should branch on codes, not prose.
+
+Current semantics are deliberate: a missing recipient during sending and an
+absent direct conversation both produce `CONVERSATION_NOT_FOUND`; no additional
+account lookup was added. Offline presence is not a message rejection. History
+still returns `{ messages: [] }` when its existing query returns no authorized
+rows. No new authorization/disclosure distinctions or group endpoints are added.
+
+CHATAPP-50 database errors remain separate: `ROOM_NOT_FOUND`, `GROUP_ROOM_REQUIRED`
+and `MEMBER_REJOIN_REQUIRED` are internal `RoomOperationError` codes. Their future
+API/service adapter must explicitly recognize that type and choose controlled
+public mappings. Do not serialize these errors or PostgreSQL exceptions directly.
+
+CHATAPP-8 still owns logout, session revocation and connected-session expiration.
+CHATAPP-28 owns broader structured failure logging. This change preserves existing
+sanitized logging and never forwards raw errors to Express's default handler.
+
+### TC-ERR-01 evidence
+
+`test/errors.test.js` verifies catalogue consistency, compatibility aliases and
+unknown/mutated/forged error sanitization. `test/http-errors.test.js` exercises real
+HTTP requests with injected pools for auth, validation, duplicate users, missing
+recipients, parser failures and exception spoofing. `test/socket-errors.test.js`
+exercises real Socket.IO connections/events with injected persistence for auth,
+payload rejection, membership denial, retry conflicts, safe failures and unchanged
+successful ACK/delivery. Existing security probes continue capturing responses
+and logs in development and production modes. No deployment keys are needed.
+
+The isolated PostgreSQL messaging suite additionally verifies `ROOM_FORBIDDEN`
+does not insert a message, alongside timestamp, persistence and retry regression
+coverage. The search and CHATAPP-50 room suites remain enabled.
+
+Local verification on 2026-10-28: backend `npm test` **66 passed, 0 failed/skipped**;
+`npm run test:db` **47 passed, 0 failed/skipped** (43 cases plus four parent tests);
+frontend **33 passed, 0 failed/skipped**, lint and production build passed. Test
+schemas were cleaned up and development records were not modified. These are local
+results, not a claim that CI has run on this uncommitted change.
 
 `.github/workflows/backend-db-ci.yml` starts disposable PostgreSQL 18 with a random
 masked password, runs `npm test` and `npm run test:db` (including messaging), then
