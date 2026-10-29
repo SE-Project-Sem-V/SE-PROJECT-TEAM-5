@@ -151,6 +151,7 @@ async function saveDirectMessage(
     );
 
     let row = insertResult.rows[0];
+    const created = Boolean(row);
 
     if (!row) {
       const existingResult = await client.query(
@@ -224,6 +225,7 @@ async function saveGroupMessage(
     );
 
     let row = insertResult.rows[0];
+    const created = Boolean(row);
 
     if (!row) {
       const existingResult = await client.query(
@@ -262,6 +264,7 @@ async function saveGroupMessage(
         text: row.content,
         timestamp: new Date(row.created_at).toISOString(),
       },
+      created,
       recipientIds: recipientsResult.rows
         .map((member) => member.user_id)
         .filter(
