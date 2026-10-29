@@ -5,6 +5,22 @@ const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 class DatabaseSetupError extends Error {}
 
+const SETUP_MESSAGES = new Set([
+  "Use the documented PG* fields and DB_SSL_MODE; URL, service, SSL and session-option overrides are unsupported.",
+  "DB_SSL_MODE must be disable or verify-full.",
+  "TLS may be disabled only for loopback development/test connections.",
+  "DB_SSL_CA_FILE requires DB_SSL_MODE=verify-full.",
+  "Cannot read DB_SSL_CA_FILE. Check the configured CA certificate.",
+  "Tests require a separate loopback TEST_PGDATABASE ending in _test, outside production.",
+  "Migrations must have unique three-digit versions and names such as 001_initial_schema.sql.",
+  "Applied migrations were changed, removed or reordered. Restore them and add a new migration instead.",
+  "Seed fixture conflicts with existing data. Nothing was overwritten; use a separate development database.",
+  "Seeding requires DB_ALLOW_SEED=true, development/test mode, and a loopback database ending in _dev or _test.",
+  "Seed target does not match the configured development/test database.",
+  "Use npm run db:migrate, npm run db:seed or npm run db:check.",
+  "Schema migration state differs from this checkout. Run db:migrate or restore applied migrations.",
+]);
+
 function required(env, name) {
   const value = env[name];
   if (typeof value !== "string" || !value.trim()) {
@@ -82,7 +98,15 @@ function testDatabaseEnvironment(env) {
 }
 
 function formatDatabaseError(error) {
-  if (error instanceof DatabaseSetupError) return error.message;
+  try {
+    if (error instanceof DatabaseSetupError && SETUP_MESSAGES.has(error.message)) return error.message;
+    if (error instanceof DatabaseSetupError &&
+        /^(PGHOST|PGDATABASE|PGUSER|PGPASSWORD|TEST_PGDATABASE) must be set in backend\/\.env or the process environment\.$/.test(error.message)) return error.message;
+    if (error instanceof DatabaseSetupError &&
+        /^(PGPORT|DB_POOL_MAX|DB_CONNECTION_TIMEOUT_MS) must be an integer between 1 and (65535|50|60000)\.$/.test(error.message)) return error.message;
+  } catch {
+    // An untrusted exception can have a throwing message getter.
+  }
   // Never print a pg error's message/detail/SQL: they can contain credentials,
   // usernames, hashes, or message content. Only expose known error codes.
   const hints = {
@@ -98,7 +122,25 @@ function formatDatabaseError(error) {
     "42P01": "Required tables are missing. Run npm run db:migrate first.",
     "55P03": "A database lock timed out. Wait for the other operation to finish and retry.",
   };
-  return Object.hasOwn(hints, error?.code) ? hints[error.code] : "Database operation failed. Check connectivity, TLS, permissions and schema configuration; no sensitive error details were logged.";
+  try {
+    const code = error?.code;
+    if (typeof code === "string" && Object.hasOwn(hints, code)) return hints[code];
+  } catch {
+    // An untrusted exception can have a throwing code getter.
+  }
+  return "Database operation failed. Check connectivity, TLS, permissions and schema configuration; no sensitive error details were logged.";
 }
 
-module.exports = { DatabaseSetupError, databaseConfig, formatDatabaseError, isLocalHost, testDatabaseEnvironment };
+function databaseFailureCode(error) {
+  try {
+    if (error instanceof DatabaseSetupError) return "DB_CONFIGURATION_FAILED";
+    const code = error?.code;
+    if (code === "ECONNREFUSED" || code === "ENOTFOUND") return "DB_CONNECTION_FAILED";
+    if (code === "28P01") return "DB_AUTH_FAILED";
+  } catch {
+    // No exception property is required for the generic classification.
+  }
+  return "DB_OPERATION_FAILED";
+}
+
+module.exports = { DatabaseSetupError, databaseConfig, formatDatabaseError, databaseFailureCode, isLocalHost, testDatabaseEnvironment };

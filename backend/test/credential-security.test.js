@@ -163,7 +163,7 @@ test("startup rejects bad JWT configuration before database setup without exposi
     });
     assert.equal(result.status, 1);
     const output = result.stdout + result.stderr;
-    assert.ok(output.includes(JWT_SECRET_ERROR));
+    assert.ok(output.includes('"event":"server.start.failed","code":"CONFIG_FAILURE"'));
     assert.equal(output.includes("PGHOST must be set"), false);
     if (key?.trim()) assertAbsent(output, [key]);
   }
@@ -186,7 +186,7 @@ for (const mode of ["development", "production"]) {
     assert.deepEqual(JSON.parse(text), { status: "error", code: "INVALID_JSON", message: "Invalid JSON request." });
     await new Promise(setImmediate);
     assertAbsent(output() + text, ["PW_PROBE_", "TOKEN_PROBE_", password, token, key, body]);
-    assert.ok(output().includes("[http] Request failed:"));
+    assert.ok(output().includes('"event":"http.request.failed","code":"INVALID_JSON","status":400'));
   });
 }
 
@@ -298,5 +298,5 @@ test("message database failures retain safe acknowledgements and redact private 
   assert.deepEqual(response, { ok: false, code: "INTERNAL_ERROR",
     message: "Message could not be saved. Please try again.", error: "Message could not be saved. Please try again." });
   assertAbsent(output() + JSON.stringify(response), [secret, key, token]);
-  assert.ok(output().includes("[messages] Failed to save message:"));
+  assert.ok(output().includes('"event":"message.save.failed","code":"INTERNAL_ERROR","scope":"direct"'));
 });

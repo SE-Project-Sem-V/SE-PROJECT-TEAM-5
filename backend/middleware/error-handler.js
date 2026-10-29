@@ -1,4 +1,5 @@
 const { AppError, httpErrorResponse, sendHttpError } = require("../errors");
+const { logFailure } = require("../logging");
 
 const PARSER_ERRORS = new Map([
   ["entity.parse.failed", "INVALID_JSON"],
@@ -11,11 +12,16 @@ const PARSER_ERRORS = new Map([
 
 function createHttpErrorHandler(logger = console) {
   return function httpErrorHandler(error, _req, res, _next) {
-    const parserCode = PARSER_ERRORS.get(error?.type);
+    let parserCode;
+    try {
+      parserCode = PARSER_ERRORS.get(error?.type);
+    } catch {
+      // Exception fields are untrusted; the normalizer will choose INTERNAL_ERROR.
+    }
     const { status, body } = httpErrorResponse(parserCode ? new AppError(parserCode) : error);
     // All logged values are controlled here. Raw errors may contain a complete
     // request body, SQL details, authorization headers or credential fragments.
-    logger.error("[http] Request failed:", status);
+    logFailure(logger, "http.request.failed", body.code, { status });
     if (res.headersSent) {
       // Passing the original error to Express would invoke its unsafe logger.
       res.destroy();

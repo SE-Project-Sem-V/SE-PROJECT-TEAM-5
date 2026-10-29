@@ -1,6 +1,7 @@
 const path = require("node:path");
 require("dotenv").config({ path: path.join(__dirname, "..", ".env"), quiet: true });
-const { DatabaseSetupError, formatDatabaseError } = require("../db/config");
+const { DatabaseSetupError, databaseFailureCode } = require("../db/config");
+const { logFailure } = require("../logging");
 const { createPool } = require("../db/pool");
 const { migrate, readMigrations } = require("../db/migrate");
 const { seed } = require("../db/seed");
@@ -38,6 +39,7 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`[database] ${formatDatabaseError(error)}`);
+  const operation = ["migrate", "seed", "check"].includes(process.argv[2]) ? process.argv[2] : "unknown";
+  logFailure(console, "database.command.failed", databaseFailureCode(error), { operation });
   process.exitCode = 1;
 });

@@ -67,7 +67,8 @@ test("missing or malformed HTTP authorization is rejected before database access
     assert.equal(result.response.headers.get("www-authenticate"), "Bearer");
   }
   assert.equal(f.calls.length, 0);
-  assert.equal(f.logs.length, 0);
+  assert.deepEqual(f.logs.map(([line]) => JSON.parse(line).code),
+    ["AUTH_REQUIRED", "AUTH_INVALID", "AUTH_INVALID", "AUTH_INVALID", "AUTH_INVALID", "AUTH_INVALID"]);
 });
 
 test("HTTP search rejects expired, tampered, premature, unsigned and wrong-algorithm tokens", async (t) => {
@@ -86,7 +87,8 @@ test("HTTP search rejects expired, tampered, premature, unsigned and wrong-algor
       index === 0 ? "AUTH_EXPIRED" : "AUTH_INVALID");
   }
   assert.equal(f.calls.length, 0);
-  assert.equal(f.logs.length, 0);
+  assert.deepEqual(f.logs.map(([line]) => JSON.parse(line).code),
+    ["AUTH_EXPIRED", "AUTH_INVALID", "AUTH_INVALID", "AUTH_INVALID", "AUTH_INVALID", "AUTH_INVALID"]);
 });
 
 test("HTTP subjects must be UUID strings before they reach PostgreSQL", async (t) => {
@@ -152,7 +154,8 @@ test("malformed, repeated, structured, unknown and oversized query parameters re
     assert.ok(result.body.message.startsWith("Use a single q parameter"));
   }
   assert.ok(f.calls.every(({ values }) => values.length === 1));
-  assert.equal(f.logs.length, 0);
+  assert.equal(f.logs.length, 15);
+  assert.ok(f.logs.every(([line]) => JSON.parse(line).code === "INVALID_INPUT"));
 });
 
 test("search trims whitespace and accepts the 64-character boundary", async (t) => {
@@ -187,6 +190,7 @@ for (const phase of ["authentication", "search"]) {
     const output = JSON.stringify([result.body, f.logs, [...result.response.headers]]);
     assert.ok([privateValue, f.key, f.token].every((value) => !output.includes(value)), "Sensitive failure details exposed (withheld)");
     safeFailure(result, 500, "Internal server error.");
-    assert.deepEqual(f.logs, [["[http] Request failed:", 500]]);
+    assert.deepEqual(f.logs.map(([line]) => JSON.parse(line)),
+      [{ level: "error", event: "http.request.failed", code: "INTERNAL_ERROR", status: 500 }]);
   });
 }

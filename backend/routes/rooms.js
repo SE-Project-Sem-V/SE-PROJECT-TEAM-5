@@ -1,7 +1,7 @@
 const { Router } = require("express");
 const { requireAuth } = require("../middleware/require-auth");
 const { withTransaction } = require("../db/pool");
-const { createGroupRoom, listRoomMembers } = require("../db/rooms");
+const { createGroupRoom, listRoomMembers, RoomOperationError, roomOperationCode } = require("../db/rooms");
 const { addGroupMembers } = require("../db/rooms");
 const {
   AuthorizationError,
@@ -13,6 +13,11 @@ const UUID_PATTERN =
 
 function publicMembers(members) {
   return members.map(({ id, username }) => ({ id, username }));
+}
+
+function groupFailure(res, status, message, code = "INVALID_INPUT") {
+  res.locals?.logFailure?.("group.operation.failed", code, { status });
+  return res.status(status).json({ status: "error", message });
 }
 
 function createRoomsRouter({ pool, jwtSecret }) {
@@ -63,10 +68,7 @@ function createRoomsRouter({ pool, jwtSecret }) {
         Array.isArray(body) ||
         Object.keys(body).some((key) => !["name", "memberIds"].includes(key))
       ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Invalid group payload.",
-        });
+        return groupFailure(res, 400, "Invalid group payload.");
       }
 
       if (
@@ -75,10 +77,7 @@ function createRoomsRouter({ pool, jwtSecret }) {
         body.name.trim().length > 100 ||
         /[\u0000-\u001f\u007f]/.test(body.name)
       ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Group name must contain 1–100 valid characters.",
-        });
+        return groupFailure(res, 400, "Group name must contain 1–100 valid characters.");
       }
 
       const memberIds = body.memberIds ?? [];
@@ -90,10 +89,7 @@ function createRoomsRouter({ pool, jwtSecret }) {
           (id) => typeof id !== "string" || !UUID_PATTERN.test(id)
         )
       ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Select at least one valid member.",
-        });
+        return groupFailure(res, 400, "Select at least one valid member.");
       }
 
       const uniqueIds = [
@@ -101,10 +97,7 @@ function createRoomsRouter({ pool, jwtSecret }) {
       ];
 
       if (uniqueIds.some((id) => id.toLowerCase() === req.user.id.toLowerCase())) {
-        return res.status(400).json({
-          status: "error",
-          message: "The creator is included automatically.",
-        });
+        return groupFailure(res, 400, "The creator is included automatically.");
       }
 
       const room = await createGroupRoom(pool, {
@@ -130,10 +123,7 @@ function createRoomsRouter({ pool, jwtSecret }) {
       const { roomId } = req.params;
 
       if (!UUID_PATTERN.test(roomId)) {
-        return res.status(400).json({
-          status: "error",
-          message: "Invalid room ID.",
-        });
+        return groupFailure(res, 400, "Invalid room ID.");
       }
 
       const body = req.body;
@@ -149,10 +139,7 @@ function createRoomsRouter({ pool, jwtSecret }) {
           (id) => typeof id !== "string" || !UUID_PATTERN.test(id),
         )
       ) {
-        return res.status(400).json({
-          status: "error",
-          message: "Provide a non-empty list of valid member IDs.",
-        });
+        return groupFailure(res, 400, "Provide a non-empty list of valid member IDs.");
       }
 
       const memberIds = [
@@ -162,10 +149,7 @@ function createRoomsRouter({ pool, jwtSecret }) {
       ];
 
       if (memberIds.some((id) => id.toLowerCase() === req.user.id.toLowerCase())) {
-        return res.status(400).json({
-          status: "error",
-          message: "The creator is already a member.",
-        });
+        return groupFailure(res, 400, "The creator is already a member.");
       }
 
       const members = await addGroupMembers(
@@ -179,32 +163,20 @@ function createRoomsRouter({ pool, jwtSecret }) {
         members: publicMembers(members),
       });
     } catch (error) {
-      if (error.code === "ROOM_NOT_FOUND") {
-        return res.status(404).json({
-          status: "error",
-          message: "Room not found.",
-        });
+      if (roomOperationCode(error) === "ROOM_NOT_FOUND") {
+        return groupFailure(res, 404, "Room not found.", "ROOM_NOT_FOUND");
       }
 
-      if (error.code === "ROOM_CREATOR_REQUIRED") {
-        return res.status(403).json({
-          status: "error",
-          message: "Only the group creator can add members.",
-        });
+      if (roomOperationCode(error) === "ROOM_CREATOR_REQUIRED") {
+        return groupFailure(res, 403, "Only the group creator can add members.", "ROOM_CREATOR_REQUIRED");
       }
 
-      if (error.code === "GROUP_ROOM_REQUIRED") {
-        return res.status(400).json({
-          status: "error",
-          message: "Members can only be added to group rooms.",
-        });
+      if (roomOperationCode(error) === "GROUP_ROOM_REQUIRED") {
+        return groupFailure(res, 400, "Members can only be added to group rooms.", "GROUP_ROOM_REQUIRED");
       }
 
-      if (error.code === "MEMBER_REJOIN_REQUIRED") {
-        return res.status(409).json({
-          status: "error",
-          message: "A departed member cannot be re-added by this operation.",
-        });
+      if (roomOperationCode(error) === "MEMBER_REJOIN_REQUIRED") {
+        return groupFailure(res, 409, "A departed member cannot be re-added by this operation.", "MEMBER_REJOIN_REQUIRED");
       }
 
       return next(error);
@@ -216,10 +188,7 @@ router.get("/:roomId/messages", async (req, res, next) => {
     const { roomId } = req.params;
 
     if (!UUID_PATTERN.test(roomId)) {
-      return res.status(400).json({
-        status: "error",
-        message: "Invalid room ID.",
-      });
+      return groupFailure(res, 400, "Invalid room ID.");
     }
 
     const messages = await withTransaction(pool, async (client) => {
@@ -234,9 +203,7 @@ router.get("/:roomId/messages", async (req, res, next) => {
       );
 
       if (roomResult.rowCount !== 1) {
-        const error = new Error("ROOM_NOT_FOUND");
-        error.code = "ROOM_NOT_FOUND";
-        throw error;
+        throw new RoomOperationError("ROOM_NOT_FOUND");
       }
 
       // Verify active membership within the same transaction.
@@ -251,9 +218,7 @@ router.get("/:roomId/messages", async (req, res, next) => {
       );
 
       if (membershipResult.rowCount !== 1) {
-        const error = new Error("ROOM_ACCESS_DENIED");
-        error.code = "ROOM_ACCESS_DENIED";
-        throw error;
+        throw new RoomOperationError("ROOM_ACCESS_DENIED");
       }
 
       const { rows } = await client.query(
@@ -275,18 +240,12 @@ router.get("/:roomId/messages", async (req, res, next) => {
 
     return res.json({ messages });
   } catch (error) {
-    if (error.code === "ROOM_NOT_FOUND") {
-      return res.status(404).json({
-        status: "error",
-        message: "Group room not found.",
-      });
+    if (roomOperationCode(error) === "ROOM_NOT_FOUND") {
+      return groupFailure(res, 404, "Group room not found.", "ROOM_NOT_FOUND");
     }
 
-    if (error.code === "ROOM_ACCESS_DENIED") {
-      return res.status(403).json({
-        status: "error",
-        message: "You do not have access to this group.",
-      });
+    if (roomOperationCode(error) === "ROOM_ACCESS_DENIED") {
+      return groupFailure(res, 403, "You do not have access to this group.", "ROOM_ACCESS_DENIED");
     }
 
     return next(error);

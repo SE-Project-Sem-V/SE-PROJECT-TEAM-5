@@ -140,7 +140,10 @@ for (const mode of ["internal", "sentinel"]) {
     assert.ok([f.privateValue, f.token, f.key].every((value) => !output.includes(value)), "Private failure details exposed (withheld)");
     failure(response, "INTERNAL_ERROR");
     assert.equal(response.message, "Message could not be saved. Please try again.");
-    assert.equal(f.logs.some((args) => args[0] === "[messages] Failed to save message:"), true);
+    assert.equal(f.logs.some(([line]) => {
+      const record = JSON.parse(line);
+      return record.event === "message.save.failed" && record.code === "INTERNAL_ERROR";
+    }), true);
   });
 }
 

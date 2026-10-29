@@ -76,6 +76,7 @@ function httpErrorResponse(error) {
 
 function sendHttpError(res, error) {
   const { status, body } = httpErrorResponse(error);
+  res.locals?.logFailure?.("http.request.failed", body.code, { status });
   return res.status(status).json(body);
 }
 
