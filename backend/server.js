@@ -26,6 +26,7 @@ const { createUsersRouter } = require("./routes/users");
 const { createRoomsRouter } = require("./routes/rooms");
 const { createSocketAuthMiddleware } = require("./sockets/socket-auth");
 const { registerMessageHandlers } = require("./sockets/message-handler");
+const { createPresenceTracker } = require("./sockets/presence");
 const { saveDirectMessage } = require("./services/message-service");
 
 function createChatServer({
@@ -55,6 +56,8 @@ function createChatServer({
     },
   });
 
+  const presence = createPresenceTracker(io);
+
   app.get("/api/ping", (req, res) => {
     res.status(200).json({
       status: "success",
@@ -73,14 +76,30 @@ function createChatServer({
   // Authenticate Socket.IO connections using JWT.
   io.use(createSocketAuthMiddleware(jwtSecret));
 
-  // Delegate connection and event responsibilities to the socket module.
+  // Track authenticated users and publish presence updates.
   io.on("connection", (socket) => {
+    const userId = String(socket.data.user.id);
+
+    // Send the connecting user the current online-user snapshot.
+    for (const onlineUserId of presence.getOnlineUserIds()) {
+      socket.emit("presenceUpdate", {
+        userId: onlineUserId,
+        online: true,
+      });
+    }
+
+    // Announce online status only when this user's first connection appears.
+    presence.addConnection(userId, socket.id);
+
     registerMessageHandlers({
       io,
       socket,
       pool,
       maxMessageLength,
       logger,
+      onDisconnect: () => {
+        presence.removeConnection(userId, socket.id);
+      },
     });
   });
 

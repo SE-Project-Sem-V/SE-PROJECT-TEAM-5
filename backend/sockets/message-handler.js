@@ -1,4 +1,4 @@
-
+﻿
 const { formatDatabaseError } = require("../db/config");
 const { AppError, ERROR_CATALOGUE ,normalizeError, socketErrorResponse, messageValidationError } = require("../errors");
 const {
@@ -20,6 +20,7 @@ function registerMessageHandlers({
   pool,
   maxMessageLength,
   logger = console,
+  onDisconnect,
 }) {
   const senderId = socket.data.user.id;
 
@@ -118,6 +119,10 @@ function registerMessageHandlers({
 
   socket.on("disconnect", (reason) => {
     logger.log("Client disconnected:", socket.id, reason);
+
+    if (typeof onDisconnect === "function") {
+      onDisconnect();
+    }
   });
 }
 
