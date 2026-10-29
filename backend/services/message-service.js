@@ -198,7 +198,7 @@ async function saveGroupMessage(
     );
 
     if (roomResult.rowCount !== 1) {
-      throw new Error("GROUP_ROOM_NOT_FOUND");
+      throw new AppError("GROUP_ROOM_NOT_FOUND");
     }
 
     // Require active membership while the transaction holds the row lock.
@@ -213,7 +213,7 @@ async function saveGroupMessage(
     );
 
     if (membershipResult.rowCount !== 1) {
-      throw new Error("ROOM_ACCESS_DENIED");
+      throw new AppError("ROOM_ACCESS_DENIED");
     }
 
     const insertResult = await client.query(
@@ -242,7 +242,7 @@ async function saveGroupMessage(
         row.room_id !== roomId ||
         row.content !== text
       ) {
-        throw new Error("CLIENT_ID_REUSED");
+        throw new AppError("CLIENT_ID_CONFLICT");
       }
     }
 

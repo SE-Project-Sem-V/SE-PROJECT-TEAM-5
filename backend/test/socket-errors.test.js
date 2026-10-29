@@ -5,7 +5,7 @@ const jwt = require("jsonwebtoken");
 const { io } = require("socket.io-client");
 const { createChatServer } = require("../server");
 
-async function fixture(t, mode = "success") {
+async function fixture(t, mode = "success", sentinel = "DIRECT_ROOM_NOT_FOUND") {
   const key = randomBytes(32).toString("hex");
   const sender = randomUUID();
   const recipient = randomUUID();
@@ -18,18 +18,22 @@ async function fixture(t, mode = "success") {
     if (mode === "internal") throw Object.assign(new Error(privateValue), {
       status: 403, code: "ROOM_FORBIDDEN", detail: privateValue,
     });
-    if (mode === "sentinel") throw new Error("DIRECT_ROOM_NOT_FOUND");
+    if (mode === "sentinel") throw new Error(sentinel);
     return {
       async query(sql) {
         state.commands.push(sql);
         if (sql === "COMMIT") state.committed = true;
-        if (sql.includes("FROM chat_rooms")) return mode === "missing"
+        if (sql.includes("FROM chat_rooms")) return ["missing", "group-missing"].includes(mode)
           ? { rowCount: 0, rows: [] } : { rowCount: 1, rows: [{ id: row.room_id }] };
+        if (sql.includes("FROM room_members") && mode.startsWith("group-")) {
+          return mode === "group-forbidden" ? { rowCount: 0, rows: [] }
+            : { rowCount: 1, rows: [{ user_id: sender }] };
+        }
         if (sql.includes("FROM room_members")) return { rowCount: 2, rows: [
           { user_id: sender, left_at: mode === "inactive" ? new Date() : null },
           { user_id: recipient, left_at: null },
         ] };
-        if (sql.includes("INSERT INTO messages")) return { rows: mode === "conflict" ? [] : [row] };
+        if (sql.includes("INSERT INTO messages")) return { rows: mode.endsWith("conflict") ? [] : [row] };
         if (sql.includes("FROM messages")) return { rows: [{ ...row, content: "Original content" }] };
         return { rows: [] };
       },
@@ -107,12 +111,16 @@ test("CHATAPP-27 rejections have INVALID_MESSAGE, preserve explanations and neve
   assert.deepEqual(f.state.commands, []);
 });
 
-for (const [mode, code] of [["missing", "CONVERSATION_NOT_FOUND"], ["inactive", "ROOM_FORBIDDEN"], ["conflict", "CLIENT_ID_CONFLICT"]]) {
+for (const [mode, code] of [
+  ["missing", "CONVERSATION_NOT_FOUND"], ["inactive", "ROOM_FORBIDDEN"], ["conflict", "CLIENT_ID_CONFLICT"],
+  ["group-missing", "GROUP_ROOM_NOT_FOUND"], ["group-forbidden", "ROOM_ACCESS_DENIED"], ["group-conflict", "CLIENT_ID_CONFLICT"],
+]) {
   test(`message processing returns ${code} and rolls back`, async (t) => {
     const f = await fixture(t, mode);
     const { socket } = await f.connect({ token: f.token });
     const response = await acknowledge(socket, "sendMessage", {
-      to: f.recipient, text: f.privateValue, clientId: randomUUID(),
+      ...(mode.startsWith("group-") ? { roomId: f.row.room_id } : { to: f.recipient }),
+      text: f.privateValue, clientId: randomUUID(),
     });
     assert.ok(!JSON.stringify([response, f.logs]).includes(f.privateValue), "Message content exposed (withheld)");
     failure(response, code);
@@ -133,6 +141,25 @@ for (const mode of ["internal", "sentinel"]) {
     failure(response, "INTERNAL_ERROR");
     assert.equal(response.message, "Message could not be saved. Please try again.");
     assert.equal(f.logs.some((args) => args[0] === "[messages] Failed to save message:"), true);
+  });
+}
+
+for (const kind of ["direct", "group"]) {
+  test(`all legacy sentinel messages remain untrusted for ${kind} requests`, async (t) => {
+    for (const sentinel of ["DIRECT_ROOM_NOT_FOUND", "ACTIVE_MEMBERSHIP_REQUIRED", "GROUP_ROOM_NOT_FOUND", "ROOM_ACCESS_DENIED", "CLIENT_ID_REUSED"]) {
+      const f = await fixture(t, "sentinel", sentinel);
+      const { socket } = await f.connect({ token: f.token });
+      const response = await acknowledge(socket, "sendMessage", {
+        ...(kind === "group" ? { roomId: f.row.room_id } : { to: f.recipient }),
+        text: f.privateValue, clientId: randomUUID(),
+      });
+      const output = JSON.stringify([response, f.logs]);
+      assert.ok([f.privateValue, f.token, f.key, sentinel].every((value) => !output.includes(value)),
+        "Untrusted failure details exposed (withheld)");
+      failure(response, "INTERNAL_ERROR");
+      assert.equal(response.message, "Message could not be saved. Please try again.");
+      assert.deepEqual(f.state.commands, []);
+    }
   });
 }
 
