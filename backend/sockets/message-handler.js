@@ -1,6 +1,6 @@
 ﻿
 const { formatDatabaseError } = require("../db/config");
-const { AppError, ERROR_CATALOGUE ,normalizeError, socketErrorResponse, messageValidationError } = require("../errors");
+const { AppError, normalizeError, socketErrorResponse, messageValidationError } = require("../errors");
 const {
   validateMessage,
   saveDirectMessage,
@@ -98,20 +98,6 @@ function registerMessageHandlers({
 
       io.to(`user:${message.to}`).emit("newMessage", message);
     } catch (error) {
-      const knownErrors = {
-        DIRECT_ROOM_NOT_FOUND: "CONVERSATION_NOT_FOUND",
-        ACTIVE_MEMBERSHIP_REQUIRED: "ROOM_FORBIDDEN",
-        GROUP_ROOM_NOT_FOUND: "GROUP_ROOM_NOT_FOUND",
-        ROOM_ACCESS_DENIED: "ROOM_ACCESS_DENIED",
-        CLIENT_ID_REUSED: "CLIENT_ID_CONFLICT",
-      };
-
-      const errorCode = knownErrors[error.message];
-
-      if (errorCode && Object.hasOwn(ERROR_CATALOGUE, errorCode)) {
-        return acknowledgeError(callback, new AppError(errorCode));
-      }
-
       if (normalizeError(error).code !== "INTERNAL_ERROR") {
         return acknowledgeError(callback, error);
       }
