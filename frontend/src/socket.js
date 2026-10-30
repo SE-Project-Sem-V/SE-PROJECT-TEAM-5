@@ -2,6 +2,7 @@ import { io } from 'socket.io-client';
 import { API_URL, EVENTS, USE_MOCK, assertSecureTransport } from './config.js';
 import { normalizeMessage, normalizePresence } from './messages.js';
 import { RECONNECT_OPTIONS, createReconnectManager } from './reconnectManager.js';
+import { reportSessionFailure } from './session.js';
 
 // Returns { sendMessage(target, text, clientId) -> Promise<message>, disconnect() }.
 // target is a user id (one-to-one chat) or { roomId } (group chat).
@@ -22,7 +23,8 @@ function realConnection(token, user, { onMessage, onStatus, onPresence }) {
   onStatus('connecting');
   // The JWT goes in the handshake (SAD flow 1, step 3). Never log it.
   const socket = io(API_URL, { auth: { token }, ...RECONNECT_OPTIONS });
-  const stopReconnectManager = createReconnectManager(socket, onStatus);
+  const stopReconnectManager = createReconnectManager(socket, onStatus,
+    (code) => reportSessionFailure(token, code));
 
   socket.on(EVENTS.RECEIVE, (raw) => onMessage(normalizeMessage(raw)));
   socket.on(EVENTS.PRESENCE, (raw) => {
@@ -37,7 +39,12 @@ function realConnection(token, user, { onMessage, onStatus, onPresence }) {
         // clientId lets the server spot a retry of a message it already stored.
         socket.timeout(5000).emit(EVENTS.SEND, { ...targetPayload(target), text, clientId }, (err, res) => {
           if (err) return reject(new Error('The server did not confirm the message. Try sending it again.'));
-          if (res?.ok === false || res?.status === 'error') return reject(new Error(ackError(res)));
+          if (res?.ok === false || res?.status === 'error') {
+            const error = new Error(ackError(res));
+            error.code = res.code || res.error?.code;
+            reportSessionFailure(token, error.code);
+            return reject(error);
+          }
           return resolve(
             normalizeMessage(res?.message ?? res ?? {}, {
               from: user.id,

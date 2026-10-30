@@ -20,6 +20,7 @@ const { createPool } = require("../db/pool");
 const { migrate } = require("../db/migrate");
 const { seed, USERS } = require("../db/seed");
 const { createChatServer } = require("../server");
+const { prepareTokens } = require("./helpers/session-fixtures");
 
 function createSocket(token, url) {
   return createClient(url, {
@@ -133,6 +134,7 @@ test(
       await seed(pool, { ...env, DB_ALLOW_SEED: "true" });
 
       const jwtSecret = randomBytes(32).toString("hex");
+      const tokenFor = await prepareTokens(pool, USERS.map(([id]) => id), jwtSecret);
 
       chat = createChatServer({
         pool,
@@ -146,9 +148,7 @@ test(
       const [aliceId, bobId, charlieId] = USERS.map(([id]) => id);
 
       async function openUser(userId) {
-        const token = jwt.sign({ sub: userId }, jwtSecret, {
-          expiresIn: "2m",
-        });
+        const token = tokenFor(userId);
 
         const socket = createSocket(token, url);
         sockets.push(socket);
@@ -164,7 +164,7 @@ test(
 
       // Charlie's snapshot must include both Alice and Bob.
       const charlieSnapshot = createSocket(
-        jwt.sign({ sub: charlieId }, jwtSecret, { expiresIn: "2m" }),
+        tokenFor(charlieId),
         url
       );
       sockets.push(charlieSnapshot);
@@ -182,7 +182,7 @@ test(
       // A second connection for Charlie must not create another
       // online transition.
       const secondCharlie = createSocket(
-        jwt.sign({ sub: charlieId }, jwtSecret, { expiresIn: "2m" }),
+        tokenFor(charlieId),
         url
       );
       sockets.push(secondCharlie);

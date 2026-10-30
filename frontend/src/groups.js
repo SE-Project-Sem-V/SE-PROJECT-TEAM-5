@@ -1,5 +1,6 @@
 import { API_URL, USE_MOCK, assertSecureTransport } from './config.js';
 import { normalizeMessage } from './messages.js';
+import { apiError } from './session.js';
 
 // ASSUMED backend contract for group chat (CHATAPP-15 and 16 are not built yet).
 // Agree these with the backend developer, then change only this file if they differ:
@@ -26,10 +27,7 @@ async function request(path, { method = 'GET', body, token } = {}) {
   }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const e = data.error;
-    throw new Error(
-      (typeof e === 'string' ? e : e?.message) || data.message || `Something went wrong (error ${response.status}). Try again.`,
-    );
+    throw apiError(response.status, data, token);
   }
   return data;
 }

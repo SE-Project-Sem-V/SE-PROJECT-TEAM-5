@@ -10,6 +10,8 @@ const { createPool, withTransaction } = require("../db/pool");
 const { migrate, readMigrations } = require("../db/migrate");
 const { seed, USERS, DIRECT_ROOM, GROUP_ROOM } = require("../db/seed");
 const { hashPassword, verifyPassword } = require("../security/passwords");
+const { issueSession, authenticateSession } = require("../services/session-service");
+const { findSession } = require("../db/sessions");
 
 test("real PostgreSQL integration (separate local *_test database required)", { timeout: 60000 }, async (t) => {
   let env;
@@ -57,22 +59,73 @@ test("real PostgreSQL integration (separate local *_test database required)", { 
 
   await t.test("creates the schema once, including concurrent migration runs", async () => {
     const results = await Promise.all([migrate(pool), migrate(pool)]);
-    assert.equal(results.flat().length, 1);
+    assert.equal(results.flat().length, 2);
     assert.deepEqual(await migrate(pool), []);
     const { rows } = await pool.query("SELECT tablename FROM pg_tables WHERE schemaname = current_schema() ORDER BY tablename");
-    assert.deepEqual(rows.map((row) => row.tablename), ["chat_rooms", "messages", "room_members", "schema_migrations", "users"]);
+    assert.deepEqual(rows.map((row) => row.tablename), ["chat_rooms", "messages", "room_members", "schema_migrations", "user_sessions", "users"]);
+  });
+
+  await t.test("migration 002 upgrades populated 001 without changing existing data and enforces session constraints", async () => {
+    const upgradeSchema = `chatapp_upgrade_test_${randomUUID().replaceAll("-", "")}`;
+    assert.match(upgradeSchema, /^chatapp_upgrade_test_[a-f0-9]{32}$/);
+    let upgrade;
+    let created = false;
+    try {
+      await admin.query(`CREATE SCHEMA "${upgradeSchema}"`);
+      created = true;
+      upgrade = new Pool({ ...databaseConfig(env), options: `-c search_path=${upgradeSchema}` });
+      upgrade.on("error", () => {});
+      const files = await readMigrations();
+      assert.deepEqual(files.map(file => file.name), ["001_initial_schema.sql", "002_sessions.sql"]);
+      assert.deepEqual(await migrate(upgrade, files.slice(0, 1)), ["001_initial_schema.sql"]);
+      await seed(upgrade, fixtures);
+      // Compare complete rows, including hashes/timestamps, without printing private data on failure.
+      const snapshot = () => Promise.all(["users", "chat_rooms", "room_members", "messages"].map(async table =>
+        (await upgrade.query(`SELECT to_jsonb(t) AS row FROM ${table} AS t ORDER BY to_jsonb(t)::text`)).rows));
+      const before = await snapshot();
+      assert.deepEqual(before.map(rows => rows.length), [3, 2, 5, 4]);
+      assert.deepEqual(await migrate(upgrade), ["002_sessions.sql"]);
+      assert.ok(JSON.stringify(await snapshot()) === JSON.stringify(before), "Upgrade must preserve every existing field (values withheld)");
+      assert.deepEqual(await migrate(upgrade), []);
+
+      const key = randomBytes(32).toString("hex");
+      const token = await issueSession(upgrade, USERS[0][0], key);
+      const session = await authenticateSession(upgrade, token, key);
+      assert.equal(session.userId, USERS[0][0]);
+      assert.equal(await findSession(upgrade, session.id, USERS[1][0]), undefined);
+      const insert = (id, owner, createdAt, expiresAt, revokedAt = null) => upgrade.query(
+        `INSERT INTO user_sessions (id, user_id, created_at, expires_at, revoked_at)
+         VALUES ($1::uuid, $2::uuid, $3, $4, $5)`, [id, owner, createdAt, expiresAt, revokedAt]);
+      const now = new Date();
+      const later = new Date(now.getTime() + 3600000);
+      const earlier = new Date(now.getTime() - 1);
+      await rejectCode(insert(session.id, USERS[0][0], now, later), "23505");
+      await rejectCode(insert(randomUUID(), randomUUID(), now, later), "23503");
+      await rejectCode(insert(randomUUID(), null, now, later), "23502");
+      await rejectCode(insert(randomUUID(), USERS[0][0], now, now), "23514");
+      await rejectCode(insert(randomUUID(), USERS[0][0], now, earlier), "23514");
+      await rejectCode(insert(randomUUID(), USERS[0][0], now, later, earlier), "23514");
+      await insert(randomUUID(), USERS[1][0], now, later, now);
+      const indexes = (await upgrade.query(
+        "SELECT indexname FROM pg_indexes WHERE schemaname = $1 AND tablename = 'user_sessions' ORDER BY indexname",
+        [upgradeSchema])).rows.map(row => row.indexname);
+      assert.deepEqual(indexes, ["user_sessions_expiry", "user_sessions_pkey", "user_sessions_user"]);
+    } finally {
+      try { if (upgrade) await upgrade.end(); }
+      finally { if (created) await admin.query(`DROP SCHEMA "${upgradeSchema}" CASCADE`); }
+    }
   });
 
   await t.test("detects applied migration changes and rolls back failed DDL", async () => {
     const files = await readMigrations();
     await assert.rejects(migrate(pool, [{ ...files[0], checksum: "changed" }]), DatabaseSetupError);
     await rejectCode(migrate(pool, [...files, {
-      name: "002_rollback_probe.sql", checksum: "0".repeat(64),
+      name: "003_rollback_probe.sql", checksum: "0".repeat(64),
       sql: "CREATE TABLE rollback_probe (id INTEGER); SELECT 1 / 0;",
     }]), "22012");
     const { rows: [row] } = await pool.query("SELECT to_regclass('rollback_probe') AS probe, (SELECT count(*)::int FROM schema_migrations) AS applied");
     assert.equal(row.probe, null);
-    assert.equal(row.applied, 1);
+    assert.equal(row.applied, 2);
   });
 
   await t.test("seeds repeatably, preserving hashes and unrelated data", async () => {

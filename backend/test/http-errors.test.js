@@ -3,14 +3,19 @@ const { randomBytes, randomUUID } = require("node:crypto");
 const test = require("node:test");
 const jwt = require("jsonwebtoken");
 const { createChatServer } = require("../server");
+const { memorySessions } = require("./helpers/session-fixtures");
 
 async function fixture(t, options = {}) {
   const key = randomBytes(32).toString("hex");
   const userId = randomUUID();
   const logs = [];
   const commands = [];
+  const sessions = memorySessions();
   const pool = {
     async query(sql, values) {
+      if (sql.includes("FROM user_sessions")) return sessions.query(sql, values);
+      const sessionResult = sessions.query(sql, values);
+      if (sessionResult) return sessionResult;
       if (options.query) return options.query(sql, values);
       return { rows: [{ id: userId }] };
     },
@@ -18,6 +23,9 @@ async function fixture(t, options = {}) {
       return {
         async query(sql, values) {
           commands.push(sql);
+          const sessionResult = sessions.query(sql, values);
+          if (sessionResult) return sessionResult;
+          if (sql.includes("INSERT INTO users") && options.query) return options.query(sql, values);
           if (options.transactionQuery) return options.transactionQuery(sql, values);
           if (sql.startsWith("SELECT id FROM users")) return { rowCount: 0, rows: [] };
           return { rows: [] };
@@ -30,7 +38,7 @@ async function fixture(t, options = {}) {
     logger: { log() {}, error: (...args) => logs.push(args) } });
   t.after(() => chat.close());
   const { port } = await chat.listen();
-  const token = jwt.sign({ sub: userId }, key, { expiresIn: "2m" });
+  const token = sessions.token(userId, key);
   async function request(path, { authorization = `Bearer ${token}`, body, method = "GET", headers = {} } = {}) {
     const response = await fetch(`http://127.0.0.1:${port}${path}`, {
       method, headers: { ...(authorization === null ? {} : { Authorization: authorization }), ...headers },

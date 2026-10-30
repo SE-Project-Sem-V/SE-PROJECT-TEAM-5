@@ -3,6 +3,7 @@ const ERROR_CATALOGUE = Object.freeze(Object.fromEntries(Object.entries({
   AUTH_REQUIRED: [401, "Authentication required."],
   AUTH_INVALID: [401, "Invalid authentication."],
   AUTH_EXPIRED: [401, "Authentication expired."],
+  AUTH_REVOKED: [401, "This session has ended. Please log in again."],
   INVALID_CREDENTIALS: [401, "Invalid username or password."],
   INVALID_INPUT: [400, "Invalid request."],
   INVALID_MESSAGE: [400, "Invalid message payload."],
@@ -24,6 +25,7 @@ const VARIANTS = Object.freeze({
   AUTH_REQUIRED: { socket: "Authentication required" },
   AUTH_INVALID: { http: "Authentication required.", socket: "Invalid or expired token", payload: "Invalid token payload" },
   AUTH_EXPIRED: { http: "Authentication required.", socket: "Invalid or expired token" },
+  AUTH_REVOKED: { http: "This session has ended. Please log in again." },
   INVALID_INPUT: {
     registration: "Valid username, password, and display name are required.",
     password: "Password must be nonempty and within the allowed length.",

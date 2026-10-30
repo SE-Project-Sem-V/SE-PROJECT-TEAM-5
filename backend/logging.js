@@ -15,7 +15,10 @@ const groupStatuses = Object.freeze({
 const events = Object.freeze({
   "http.request.failed": { codes: publicCodes, fields: { status: [400, 401, 403, 404, 409, 413, 415, 500] } },
   "group.operation.failed": { codes: groupCodes, fields: { status: [400, 403, 404, 409] } },
-  "auth.socket.failed": { codes: new Set(["AUTH_REQUIRED", "AUTH_INVALID", "AUTH_EXPIRED"]), fields: {} },
+  "auth.socket.failed": { codes: new Set(["AUTH_REQUIRED", "AUTH_INVALID", "AUTH_EXPIRED", "AUTH_REVOKED", "INTERNAL_ERROR"]), fields: {} },
+  "session.check.failed": { codes: new Set(["AUTH_INVALID", "AUTH_EXPIRED", "AUTH_REVOKED", "INTERNAL_ERROR"]), fields: {} },
+  "session.logout.failed": { codes: new Set(["AUTH_INVALID", "AUTH_EXPIRED", "AUTH_REVOKED", "INTERNAL_ERROR"]), fields: {} },
+  "session.disconnect.failed": { codes: new Set(["INTERNAL_ERROR"]), fields: {} },
   "message.invalid": { codes: new Set(["INVALID_MESSAGE"]), fields: { scope: ["direct", "group"] } },
   "message.rejected": { codes: new Set([
     "CONVERSATION_NOT_FOUND", "ROOM_FORBIDDEN", "CLIENT_ID_CONFLICT",

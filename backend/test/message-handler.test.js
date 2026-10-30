@@ -17,6 +17,7 @@ const { databaseConfig, testDatabaseEnvironment } = require("../db/config");
 const { createPool, withTransaction } = require("../db/pool");
 const { seed, USERS, DIRECT_ROOM, GROUP_ROOM } = require("../db/seed");
 const { createChatServer } = require("../server");
+const { prepareTokens } = require("./helpers/session-fixtures");
 const { migrate } = require("../db/migrate");
 
 const waitForEvent = (socket, event, timeout = 3000) =>
@@ -103,6 +104,7 @@ test(
 
       // Test tokens use an ephemeral key, independent of deployment credentials.
       const jwtSecret = randomBytes(32).toString("hex");
+      const tokenFor = await prepareTokens(pool, USERS.map(([id]) => id), jwtSecret);
 
       chat = createChatServer({
         pool,
@@ -114,17 +116,17 @@ test(
       const url = `http://127.0.0.1:${address.port}`;
 
       alice = await connect(
-        jwt.sign({ sub: USERS[0][0] }, jwtSecret, { expiresIn: "2m" }),
+        tokenFor(USERS[0][0]),
         url,
       );
 
       bob = await connect(
-        jwt.sign({ sub: USERS[1][0] }, jwtSecret, { expiresIn: "2m" }),
+        tokenFor(USERS[1][0]),
         url,
       );
 
       charlie = await connect(
-        jwt.sign({ sub: USERS[2][0] }, jwtSecret, { expiresIn: "2m" }),
+        tokenFor(USERS[2][0]),
         url,
       );
 

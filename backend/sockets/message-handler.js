@@ -1,6 +1,8 @@
 ﻿
 const { AppError, normalizeError, socketErrorResponse, messageValidationError } = require("../errors");
 const { logFailure } = require("../logging");
+const { assertActiveSession } = require("../services/session-service");
+const { endSessionSocket } = require("./session-lifecycle");
 const {
   validateMessage,
   saveDirectMessage,
@@ -47,8 +49,21 @@ function registerMessageHandlers({
     return;
   }
 
-  socket.on("protected:ping", (callback) => {
+  async function authorized(callback) {
+    try {
+      await assertActiveSession(pool, socket.data.session);
+      return !socket.data.sessionEnded;
+    } catch (error) {
+      logFailure(logger, "session.check.failed", normalizeError(error).code);
+      acknowledgeError(callback, error, logger, "direct");
+      endSessionSocket(socket, error, logger);
+      return false;
+    }
+  }
+
+  socket.on("protected:ping", async (callback) => {
     if (typeof callback !== "function") return;
+    if (!await authorized(callback)) return;
 
     try {
       callback({
@@ -63,6 +78,7 @@ function registerMessageHandlers({
 
   socket.on("sendMessage", async (payload, callback) => {
     if (typeof callback !== "function") return;
+    if (!await authorized(callback)) return;
 
     // Group payloads have roomId; direct payloads have to.
     const isGroupMessage =
@@ -84,10 +100,16 @@ function registerMessageHandlers({
     let result;
     try {
       result = isGroupMessage
-        ? await saveGroupMessage(pool, senderId, payload.roomId, payload.text, payload.clientId)
-        : await saveDirectMessage(pool, senderId, payload.to, payload.text, payload.clientId);
+        ? await saveGroupMessage(pool, senderId, payload.roomId, payload.text, payload.clientId, socket.data.session)
+        : await saveDirectMessage(pool, senderId, payload.to, payload.text, payload.clientId, socket.data.session);
     } catch (error) {
       const code = normalizeError(error).code;
+      if (code.startsWith("AUTH_")) {
+        logFailure(logger, "session.check.failed", code);
+        acknowledgeError(callback, error, logger, scope);
+        endSessionSocket(socket, error, logger);
+        return;
+      }
       if (code !== "INTERNAL_ERROR") {
         logFailure(logger, "message.rejected", code, { scope });
         return acknowledgeError(callback, error, logger, scope);

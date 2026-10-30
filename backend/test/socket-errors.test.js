@@ -4,6 +4,7 @@ const test = require("node:test");
 const jwt = require("jsonwebtoken");
 const { io } = require("socket.io-client");
 const { createChatServer } = require("../server");
+const { memorySessions } = require("./helpers/session-fixtures");
 
 async function fixture(t, mode = "success", sentinel = "DIRECT_ROOM_NOT_FOUND") {
   const key = randomBytes(32).toString("hex");
@@ -14,13 +15,16 @@ async function fixture(t, mode = "success", sentinel = "DIRECT_ROOM_NOT_FOUND") 
     content: "Persisted message", created_at: new Date() };
   const state = { commands: [], committed: false };
   const logs = [];
-  const pool = { async connect() {
+  const sessions = memorySessions();
+  const pool = { async query(sql, values) { return sessions.query(sql, values) || { rows: [] }; }, async connect() {
     if (mode === "internal") throw Object.assign(new Error(privateValue), {
       status: 403, code: "ROOM_FORBIDDEN", detail: privateValue,
     });
     if (mode === "sentinel") throw new Error(sentinel);
     return {
-      async query(sql) {
+      async query(sql, values) {
+        const sessionResult = sessions.query(sql, values);
+        if (sessionResult) return sessionResult;
         state.commands.push(sql);
         if (sql === "COMMIT") state.committed = true;
         if (sql.includes("FROM chat_rooms")) return ["missing", "group-missing"].includes(mode)
@@ -53,8 +57,8 @@ async function fixture(t, mode = "success", sentinel = "DIRECT_ROOM_NOT_FOUND") 
       socket.once("connect_error", (error) => { clearTimeout(timer); socket.disconnect(); resolve({ error }); });
     });
   }
-  const token = jwt.sign({ sub: sender }, key, { expiresIn: "2m" });
-  return { key, sender, recipient, token, connect, row, state, logs, privateValue };
+  const token = sessions.token(sender, key);
+  return { key, sender, recipient, token, connect, row, state, logs, privateValue, sessions };
 }
 
 function acknowledge(socket, event, payload) {
@@ -169,7 +173,7 @@ for (const kind of ["direct", "group"]) {
 test("success ACK and recipient event retain the persisted message shape after commit", async (t) => {
   const f = await fixture(t);
   const { socket: sender } = await f.connect({ token: f.token });
-  const recipientToken = jwt.sign({ sub: f.recipient }, f.key, { expiresIn: "2m" });
+  const recipientToken = f.sessions.token(f.recipient, f.key);
   const { socket: recipient } = await f.connect({ token: recipientToken });
   const incoming = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Recipient event timed out")), 3000);
