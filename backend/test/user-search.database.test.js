@@ -148,11 +148,17 @@ test("CHATAPP-10 authenticated user search against isolated PostgreSQL", { timeo
   });
 
   await t.test("returns only public fields and never logs credentials or profiles", async () => {
+    const logCount = logs.length;
     const result = await request("ali");
     assert.equal(result.status, 200);
     for (const user of result.body.users) assert.deepEqual(Object.keys(user).sort(), ["id", "username"]);
     const output = JSON.stringify(logs);
     assert.ok([key, token, hash, privateProfile].every((value) => !output.includes(value)), "Private data logged (withheld)");
-    assert.deepEqual(logs, []);
+    assert.equal(logs.length, logCount, "Successful search should not add a failure log");
+    assert.ok(logs.every(([line]) => {
+      const record = JSON.parse(line);
+      return record.level === "error" && record.event === "http.request.failed" &&
+        ["INVALID_INPUT", "AUTH_REQUIRED", "AUTH_INVALID", "AUTH_EXPIRED"].includes(record.code);
+    }));
   });
 });

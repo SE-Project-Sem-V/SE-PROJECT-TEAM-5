@@ -1,10 +1,11 @@
 const { Pool } = require("pg");
-const { databaseConfig, formatDatabaseError } = require("./config");
+const { databaseConfig, databaseFailureCode } = require("./config");
+const { logFailure } = require("../logging");
 
-function createPool(env = process.env) {
+function createPool(env = process.env, logger = console) {
   const pool = new Pool(databaseConfig(env));
   pool.on("error", (error) => {
-    console.error(`[database] Idle connection failed: ${formatDatabaseError(error)}`);
+    logFailure(logger, "database.idle.failed", databaseFailureCode(error));
   });
   return pool;
 }

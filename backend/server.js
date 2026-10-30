@@ -12,11 +12,11 @@ require("dotenv").config({
 
 const { createAuthRouter } = require("./routes/auth");
 const { createPool } = require("./db/pool");
-const { formatDatabaseError } = require("./db/config");
+const { databaseFailureCode } = require("./db/config");
+const { logFailure } = require("./logging");
 const {
   validateJwtSecret,
   SecurityConfigurationError,
-  JWT_SECRET_ERROR,
 } = require("./security/config");
 const {
   createHttpErrorHandler,
@@ -28,6 +28,8 @@ const { createSocketAuthMiddleware } = require("./sockets/socket-auth");
 const { registerMessageHandlers } = require("./sockets/message-handler");
 const { createPresenceTracker } = require("./sockets/presence");
 const { saveDirectMessage } = require("./services/message-service");
+
+class ServerBindError extends Error {}
 
 function createChatServer({
   pool,
@@ -45,6 +47,10 @@ function createChatServer({
   const app = express();
   const server = http.createServer(app);
 
+  app.use((_req, res, next) => {
+    res.locals.logFailure = (event, code, metadata) => logFailure(logger, event, code, metadata);
+    next();
+  });
   app.use(cors());
   app.use(express.json());
   app.use("/api/auth", createAuthRouter({ pool, jwtSecret }));
@@ -56,7 +62,7 @@ function createChatServer({
     },
   });
 
-  const presence = createPresenceTracker(io);
+  const presence = createPresenceTracker(io, logger);
 
   app.get("/api/ping", (req, res) => {
     res.status(200).json({
@@ -74,7 +80,7 @@ function createChatServer({
   app.use(createHttpErrorHandler(logger));
 
   // Authenticate Socket.IO connections using JWT.
-  io.use(createSocketAuthMiddleware(jwtSecret));
+  io.use(createSocketAuthMiddleware(jwtSecret, logger));
 
   // Track authenticated users and publish presence updates.
   io.on("connection", (socket) => {
@@ -82,10 +88,14 @@ function createChatServer({
 
     // Send the connecting user the current online-user snapshot.
     for (const onlineUserId of presence.getOnlineUserIds()) {
-      socket.emit("presenceUpdate", {
-        userId: onlineUserId,
-        online: true,
-      });
+      try {
+        socket.emit("presenceUpdate", {
+          userId: onlineUserId,
+          online: true,
+        });
+      } catch {
+        logFailure(logger, "presence.update.failed", "PRESENCE_UPDATE_FAILED", { operation: "snapshot" });
+      }
     }
 
     // Announce online status only when this user's first connection appears.
@@ -141,7 +151,7 @@ function createChatServer({
 async function main() {
   const jwtSecret = validateJwtSecret(process.env.JWT_SECRET);
 
-  const pool = createPool();
+  const pool = createPool(process.env, console);
   const chat = createChatServer({ pool, jwtSecret });
   const port = Number(process.env.PORT) || 5000;
 
@@ -150,7 +160,7 @@ async function main() {
     console.log(`Chat backend running on http://localhost:${port}`);
   } catch (error) {
     await pool.end();
-    throw error;
+    throw new ServerBindError();
   }
 
   let shuttingDown = false;
@@ -164,11 +174,8 @@ async function main() {
     try {
       await chat.close();
       await pool.end();
-    } catch (error) {
-      console.error(
-        "[database] Error during shutdown:",
-        formatDatabaseError(error),
-      );
+    } catch {
+      logFailure(console, "server.shutdown.failed", "INTERNAL_ERROR");
       process.exitCode = 1;
     }
   }
@@ -177,16 +184,27 @@ async function main() {
   process.once("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
+function installFatalHandlers(logger = console) {
+  let fatal = false;
+  const onFatal = () => {
+    if (fatal) return;
+    fatal = true;
+    logFailure(logger, "server.fatal", "INTERNAL_ERROR");
+    process.exitCode = 1;
+    setImmediate(() => process.exit(1));
+  };
+  process.on("uncaughtException", onFatal);
+  process.on("unhandledRejection", onFatal);
+}
+
 if (require.main === module) {
+  installFatalHandlers();
   main().catch((error) => {
-    console.error(
-      "Chat backend failed to start:",
-      error instanceof SecurityConfigurationError
-        ? JWT_SECRET_ERROR
-        : formatDatabaseError(error),
-    );
+    const code = error instanceof SecurityConfigurationError ? "CONFIG_FAILURE"
+      : error instanceof ServerBindError ? "SERVER_BIND_FAILED" : databaseFailureCode(error);
+    logFailure(console, "server.start.failed", code);
     process.exitCode = 1;
   });
 }
 
-module.exports = { createChatServer, saveDirectMessage };
+module.exports = { createChatServer, saveDirectMessage, installFatalHandlers };

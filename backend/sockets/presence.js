@@ -1,5 +1,7 @@
 
-function createPresenceTracker(io) {
+const { logFailure } = require("../logging");
+
+function createPresenceTracker(io, logger = console) {
   const connections = new Map();
 
   function getOnlineUserIds() {
@@ -11,7 +13,13 @@ function createPresenceTracker(io) {
   }
 
   function emitPresence(userId, online) {
-    io.emit("presenceUpdate", { userId, online });
+    try {
+      io.emit("presenceUpdate", { userId, online });
+    } catch {
+      logFailure(logger, "presence.update.failed", "PRESENCE_UPDATE_FAILED", {
+        operation: online ? "online" : "offline",
+      });
+    }
   }
 
   function addConnection(userId, socketId) {

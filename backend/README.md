@@ -182,8 +182,9 @@ JWT key or the database connection credential.
 
 The final HTTP middleware returns controlled JSON for malformed/oversized bodies,
 unsupported encodings and unexpected errors, and a generic 404 without echoing
-the requested URL. Error logs contain a fixed label and status only, never raw
-errors, request bodies, headers, cookies, query strings or credential fragments.
+the requested URL. Failure logs are single-line JSON with allowlisted event names,
+codes and metadata, never raw errors, request bodies, headers, cookies, query strings
+or credential fragments.
 Register future HTTP routes **above** the final handlers in `createChatServer()`.
 If headers are already sent, the response is closed without forwarding the raw
 error to Express's default logger. Keep verbose third-party request/debug logging
@@ -499,8 +500,26 @@ API/service adapter must explicitly recognize that type and choose controlled
 public mappings. Do not serialize these errors or PostgreSQL exceptions directly.
 
 CHATAPP-8 still owns logout, session revocation and connected-session expiration.
-CHATAPP-28 owns broader structured failure logging. This change preserves existing
-sanitized logging and never forwards raw errors to Express's default handler.
+CHATAPP-28 adds `logging.js` for controlled failure records. It accepts only fixed
+event/code combinations and the listed metadata for each event. Example:
+
+```json
+{"level":"error","event":"message.save.failed","code":"INTERNAL_ERROR","scope":"group"}
+```
+
+HTTP failures use `http.request.failed` with a catalogue code and status; group
+operations use `group.operation.failed` with a fixed internal code and status.
+Socket authentication uses `auth.socket.failed`. Message handling uses
+`message.invalid`, `message.rejected`, `message.save.failed`,
+`message.ack.failed`, and `message.broadcast.failed`, with `scope` set to
+`direct` or `group`. Failed ping acknowledgements use `socket.ack.failed`.
+Presence emit and join failures use
+`presence.update.failed` with a fixed operation. Database idle and CLI failures
+use `database.idle.failed` or `database.command.failed` with a fixed diagnostic
+category. Startup, shutdown and fatal failures use `server.start.failed`,
+`server.shutdown.failed`, and `server.fatal`. No event includes a username,
+user/socket/client ID, message content, token, SQL, raw URL or exception detail.
+Fatal handlers are installed only when `server.js` is run directly.
 
 ### TC-ERR-01 evidence
 

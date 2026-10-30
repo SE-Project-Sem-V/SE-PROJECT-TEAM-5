@@ -1,11 +1,23 @@
 const { withTransaction } = require("./pool");
 
+const trustedRoomErrors = new WeakMap();
+const ROOM_CODES = new Set([
+  "MEMBER_REJOIN_REQUIRED", "ROOM_NOT_FOUND", "GROUP_ROOM_REQUIRED",
+  "ROOM_CREATOR_REQUIRED", "ROOM_ACCESS_DENIED",
+]);
+
 class RoomOperationError extends Error {
   constructor(code) {
-    super(code);
+    const trustedCode = ROOM_CODES.has(code) ? code : "ROOM_OPERATION_FAILED";
+    super(trustedCode);
     this.name = "RoomOperationError";
-    this.code = code;
+    this.code = trustedCode;
+    trustedRoomErrors.set(this, trustedCode);
   }
+}
+
+function roomOperationCode(error) {
+  return trustedRoomErrors.get(error);
 }
 
 function checkMemberIds(memberIds) {
@@ -123,5 +135,5 @@ async function listRoomMembers(db, roomId, { includeDeparted = false } = {}) {
 }
 
 module.exports = {
-  RoomOperationError, createGroupRoom, addGroupMembers, isActiveMember, listRoomMembers,
+  RoomOperationError, roomOperationCode, createGroupRoom, addGroupMembers, isActiveMember, listRoomMembers,
 };
