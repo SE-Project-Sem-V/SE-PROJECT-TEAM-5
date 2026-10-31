@@ -103,12 +103,20 @@ test("CHATAPP-9 profiles persist and respect revoked sessions in isolated Postgr
 
   await t.test("Unicode whitespace-only names return 400 without changing stored profiles", async () => {
     const before = await request("/api/users/me", "GET", undefined, token);
+    // PostgreSQL POSIX whitespace classes depend on locale. The API's Unicode
+    // validation must reject these names regardless of that classification.
     for (const displayName of ["\u0085", "\t\u0085\u2003\n", "\u0085".repeat(64)]) {
-      const { rows: [check] } = await pool.query("SELECT $1::text ~ '[^[:space:]]' AS nonblank", [displayName]);
-      assert.equal(check.nonblank, false);
       const denied = await request("/api/users/me", "PATCH", { displayName }, token);
       assert.equal(denied.status, 400);
       assert.equal(denied.body.code, "INVALID_INPUT");
+    }
+    // Exercise the actual database CHECK with portable empty/ASCII whitespace
+    // cases, rather than prescribing how its locale must classify U+0085.
+    for (const displayName of ["", " \t\r\n"]) {
+      await assert.rejects(
+        pool.query("UPDATE users SET display_name = $1 WHERE id = $2::uuid", [displayName, alice.body.user.id]),
+        error => error.code === "23514",
+      );
     }
     assert.deepEqual((await request("/api/users/me", "GET", undefined, token)).body, before.body);
     const displayName = "\u0085" + "猫".repeat(63);
