@@ -51,6 +51,14 @@ button, input { font: inherit; }
 .sidebar { background: var(--panel); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
 .me { display: flex; justify-content: space-between; align-items: center; padding: 1rem; border-bottom: 1px solid var(--line); font-weight: 600; }
 .me-name { font-weight: 600; }
+.me-actions { display: flex; flex-direction: column; gap: 0.35rem; margin-left: 0.5rem; }
+.me > div:first-child { min-width: 0; }
+.me-name, .user-name { overflow-wrap: anywhere; }
+.profile-panel { padding: 0.75rem 1rem; border-bottom: 1px solid var(--line); overflow-y: auto; max-height: 65vh; flex-shrink: 0; }
+.profile-panel h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }
+.profile-panel textarea { width: 100%; padding: 0.55rem; border: 1px solid var(--line); border-radius: 6px; font: inherit; resize: vertical; }
+.profile-help, .profile-username, .user-handle { font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
+.profile-message { font-size: 0.85rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 .conn { display: flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; font-weight: 400; color: var(--muted); }
 .conn::before { content: ''; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--warn); }
 .conn-connected::before { background: var(--ok); }

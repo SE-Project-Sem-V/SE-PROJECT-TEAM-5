@@ -39,7 +39,7 @@ test("CHATAPP-10 authenticated user search against isolated PostgreSQL", { timeo
     ...Array.from({ length: 26 }, (_, i) => `member${String(25 - i).padStart(2, "0")}`)];
   const ids = names.map((_, i) => i === 0 ? me : randomUUID());
   const hash = await hashPassword(randomBytes(32).toString("hex"));
-  const privateProfile = randomBytes(32).toString("hex");
+  const publicProfile = "Public display and status";
   try {
     const { rows: [target] } = await admin.query("SELECT current_database() AS name");
     assert.equal(target.name, env.PGDATABASE);
@@ -51,7 +51,7 @@ test("CHATAPP-10 authenticated user search against isolated PostgreSQL", { timeo
     await pool.query(
       `INSERT INTO users (id, username, password_hash, display_name, status_message)
        SELECT id, username, $3, $4, $4 FROM unnest($1::uuid[], $2::text[]) AS fixture(id, username)`,
-      [ids, names, hash, privateProfile],
+      [ids, names, hash, publicProfile],
     );
   } catch (error) {
     throw new Error(`${formatDatabaseError(error)} Check the isolated PostgreSQL test configuration.`);
@@ -68,7 +68,7 @@ test("CHATAPP-10 authenticated user search against isolated PostgreSQL", { timeo
       headers: authorization ? { Authorization: `Bearer ${authorization}` } : {}, signal: AbortSignal.timeout(5000),
     });
     const text = await response.text();
-    assert.ok([key, token, hash, privateProfile].every((value) => !text.includes(value)), "Private data in response (withheld)");
+    assert.ok([key, token, hash].every((value) => !text.includes(value)), "Private data in response (withheld)");
     return { status: response.status, body: JSON.parse(text) };
   }
 
@@ -153,9 +153,13 @@ test("CHATAPP-10 authenticated user search against isolated PostgreSQL", { timeo
     const logCount = logs.length;
     const result = await request("ali");
     assert.equal(result.status, 200);
-    for (const user of result.body.users) assert.deepEqual(Object.keys(user).sort(), ["id", "username"]);
+    for (const user of result.body.users) {
+      assert.deepEqual(Object.keys(user).sort(), ["display_name", "id", "status_message", "username"]);
+      assert.equal(user.display_name, publicProfile);
+      assert.equal(user.status_message, publicProfile);
+    }
     const output = JSON.stringify(logs);
-    assert.ok([key, token, hash, privateProfile].every((value) => !output.includes(value)), "Private data logged (withheld)");
+    assert.ok([key, token, hash, publicProfile].every((value) => !output.includes(value)), "Private data logged (withheld)");
     assert.equal(logs.length, logCount, "Successful search should not add a failure log");
     assert.ok(logs.every(([line]) => {
       const record = JSON.parse(line);

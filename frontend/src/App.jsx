@@ -3,7 +3,8 @@ import AuthScreen from './components/AuthScreen.jsx';
 import UserList from './components/UserList.jsx';
 import GroupList from './components/GroupList.jsx';
 import ChatWindow from './components/ChatWindow.jsx';
-import { getOrCreateDirectConversation, logout } from './api.js';
+import ProfilePanel from './components/ProfilePanel.jsx';
+import { getMyProfile, updateMyProfile, getOrCreateDirectConversation, logout } from './api.js';
 import { fetchRoomMessages, listRooms } from './groups.js';
 import { fetchHistory } from './history.js';
 import { appendUnique, mergeHistory } from './messages.js';
@@ -63,6 +64,10 @@ export default function App() {
   const [session, setSession] = useState(loadSession);
   const sessionGuard = useRef(createSessionGuard(session?.token));
   const [logoutStatus, setLogoutStatus] = useState(null);
+  const [profile, setProfile] = useState(null);
+  const [profileState, setProfileState] = useState('loading');
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
   const [peer, setPeer] = useState(null); // the open chat: a user or a group
   const [messages, setMessages] = useState({}); // { [peer.id]: [message] }
   const [unread, setUnread] = useState({}); // { [peer.id]: count }
@@ -143,6 +148,33 @@ export default function App() {
     if (sessionGuard.current.isCurrent(token)) clearSession('Your session ended. Please log in again.');
   }), []);
 
+  // Profile changes never replace the authentication session or restart sockets.
+  useEffect(() => {
+    if (session) loadProfile();
+  }, [session]);
+
+  async function loadProfile() {
+    const current = sessionGuard.current.capture();
+    setProfileState('loading');
+    try {
+      const loaded = await getMyProfile(session.token);
+      if (current()) { setProfile(loaded); setProfileState('ready'); }
+    } catch {
+      if (current()) setProfileState('error');
+    }
+  }
+
+  async function saveProfile(patch) {
+    const current = sessionGuard.current.capture();
+    setProfileSaving(true);
+    try {
+      const saved = await updateMyProfile(patch, session.token);
+      if (current()) setProfile(saved);
+    } finally {
+      if (current()) setProfileSaving(false);
+    }
+  }
+
   // After every (re)connect, drop old presence data, reload the user list and quietly reload the groups.
   useEffect(() => {
     if (status === 'connected') {
@@ -155,6 +187,10 @@ export default function App() {
   function handleAuth(newSession) {
     sessionGuard.current.setToken(newSession.token);
     setLogoutStatus(null);
+    setProfile(null);
+    setProfileState('loading');
+    setProfileOpen(false);
+    setProfileSaving(false);
     saveSession(newSession);
     setSession(newSession);
   }
@@ -184,6 +220,10 @@ export default function App() {
     setLogoutStatus(message);
     saveSession(null);
     setSession(null);
+    setProfile(null);
+    setProfileState('loading');
+    setProfileOpen(false);
+    setProfileSaving(false);
     setPeer(null);
     setMessages({});
     setUnread({});
@@ -296,20 +336,29 @@ export default function App() {
     return <AuthScreen notice={logoutStatus} onAuth={(value) => { if (current()) handleAuth(value); }} />;
   }
 
+  const me = profile || session.user;
+
   return (
     <div className={`app ${peer ? 'has-peer' : ''}`}>
       <aside className="sidebar">
         <header className="me">
           <div>
-            <div className="me-name">{session.user.displayName || session.user.username}</div>
+            <div className="me-name">{me.displayName || me.username}</div>
             <div className={`conn conn-${status}`} role="status" data-testid="connection-status">
               {STATUS_LABEL[status]}
             </div>
           </div>
-          <button type="button" className="link" onClick={handleLogout} data-testid="logout-button">
-            Log out
-          </button>
+          <div className="me-actions">
+            <button type="button" className="link" aria-expanded={profileOpen} disabled={profileSaving}
+              onClick={() => { if (!profileSaving) setProfileOpen(open => !open); }} data-testid="profile-button">Profile</button>
+            <button type="button" className="link" onClick={handleLogout} data-testid="logout-button">
+              Log out
+            </button>
+          </div>
         </header>
+
+        {profileOpen && <ProfilePanel profile={profile} state={profileState} saving={profileSaving}
+          onSave={saveProfile} onReload={loadProfile} onClose={() => { if (!profileSaving) setProfileOpen(false); }} />}
 
         <div className="tabs" role="tablist">
           <button
@@ -352,7 +401,7 @@ export default function App() {
             rooms={rooms}
             state={roomsState}
             token={session.token}
-            me={session.user}
+            me={me}
             selectedId={peer?.id}
             unread={unread}
             onSelect={(room) => handleSelect(groupPeer(room))}
@@ -365,7 +414,7 @@ export default function App() {
         <ChatWindow
           key={peer?.id ?? 'none'}
           peer={peer}
-          me={session.user}
+          me={me}
           messages={peer ? messages[peer.id] || [] : []}
           status={status}
           onSend={handleSend}
