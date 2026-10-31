@@ -642,6 +642,89 @@ integration **78 passed** (Node includes parent tests), frontend **48 passed**;
 all had **0 failed, 0 skipped**. Frontend lint/build and `git diff --check` passed.
 All temporary test schemas were removed. No development migration or seed was run.
 
+## Secure remote transport (CHATAPP-23)
+
+The default `TRANSPORT_MODE=local` is for development/test only. Set
+`BACKEND_HOST=127.0.0.1` (default) or `::1`; the listener and request peer must
+both be loopback. IPv4-mapped IPv6 peers are normalized. Forwarding headers do
+not grant access in local mode. Public/wildcard listener overrides are rejected.
+Do not publish this port, tunnel it, or expose local mode through a public proxy.
+Existing local `.env` files need no changes when `NODE_ENV=development`.
+
+Remote deployment uses a **same-host TLS-terminating reverse proxy**. No proxy,
+domain, certificates or deployment platform are provisioned by this repository.
+The minimal backend configuration is:
+
+```dotenv
+NODE_ENV=production
+TRANSPORT_MODE=proxy
+BACKEND_HOST=127.0.0.1
+TRUSTED_PROXY_IPS=127.0.0.1
+CLIENT_URL=https://<frontend-host>
+```
+
+Replace the frontend placeholder with its actual HTTPS origin. The trusted peer
+list contains exact IP literals, comma-separated if needed; include `::1` only
+if the proxy connects over IPv6. CIDRs, hostnames, wildcard trust and non-loopback
+proxy peers are unsupported. The actual TCP peer is checked, not `Host`,
+`X-Forwarded-For`, or another client-provided identity header. Express trust is
+restricted to that same list. This is a network trust boundary, **not mutual TLS
+or cryptographic proxy authentication**: trusted local processes can connect to
+the loopback port. Restrict access to the machine accordingly.
+
+The proxy must terminate valid HTTPS/WSS, overwrite incoming
+`X-Forwarded-Proto` with the single value `https` for TLS requests, and remove
+`Forwarded`. Missing, duplicate, mixed/list-valued, conflicting or malformed
+protocol assertions are rejected. Do not merely append to a supplied header.
+The proxy must not forward public HTTP requests as if they arrived over TLS.
+Disable public plaintext API/Socket.IO access at the edge. Redirecting a request
+after a password/token has already crossed HTTP cannot protect that credential.
+Serve the frontend over HTTPS too; use an HTTPS API URL from the outset.
+
+Forward `/api/` and `/socket.io/`, including polling GET/POST and WebSocket
+upgrades. Preserve upgrade headers using the proxy's supported configuration;
+its idle/read timeout must exceed Socket.IO's `pingInterval + pingTimeout`
+(currently the default 45 seconds). Preserve authorization headers, request
+bodies and existing Socket.IO paths. Restrict the Node port to loopback;
+public clients connect only to the TLS endpoint. Manage valid certificates,
+renewal and private keys outside Git using the chosen deployment platform.
+Keep the existing database verified-TLS production settings as well.
+
+The policy runs before Express body parsing/authentication and via
+`io.engine.use` on every polling request and WebSocket upgrade, not only the
+namespace handshake. Insecure REST requests receive HTTP 403 with
+`{"status":"error","code":"SECURE_TRANSPORT_REQUIRED","message":"Secure HTTPS/WSS transport is required."}`.
+Engine.IO retains its own rejection format: HTTP 400 with numeric code 3 and
+`Bad request` for polling, or a failed HTTP 400 upgrade. This is not a namespace
+JWT `connect_error` response. Failure logs use only the controlled transport
+code/status; no headers, addresses, tokens or raw exceptions are logged.
+Express and Socket.IO use the canonical `CLIENT_URL` origin for CORS; CORS is
+not used as a TLS boundary. Engine.IO preflights also pass transport validation
+before returning an allowed HTTP 204 response.
+Socket.IO's separate client-script server is disabled because the Vite frontend
+already bundles its client; that static handler bypasses both middleware paths.
+
+Production defaults to proxy mode and refuses local mode. Proxy mode requires
+explicit trusted peers and an HTTPS `CLIENT_URL`; invalid settings fail startup
+with the safe `CONFIG_FAILURE` log. A proxy on another machine is **unsupported**
+by this HTTP-only upstream configuration: that connection must also be encrypted
+before cross-host proxying can be supported. Do not add a remote IP to the trust
+list or open the listener as a workaround.
+
+Deploy in this order: arrange the domain/certificates and same-host proxy;
+configure its secure forwarding and public/private port restrictions; configure
+the backend proxy mode; build the frontend with `VITE_USE_MOCK=false` and
+`VITE_API_URL=https://<backend-host>`; then verify HTTPS API requests, actual WSS
+upgrades, messaging, presence and logout through the public TLS endpoint. Local
+unit tests simulate a trusted proxy's HTTPS assertion over loopback; they do not
+prove certificates or an external deployment are correctly configured.
+
+`test/transport-security.test.js` covers policy/configuration, IPv4/IPv6 local
+HTTP, real polling/WS and upgrades, spoofed/ambiguous headers, pre-auth rejection,
+safe responses/logs, authenticated message ACK/delivery and session logout.
+Run `npm test`, guarded `npm run test:db`, and the frontend tests/lint/build.
+No database migration, new dependency or signing-key change is required.
+
 ## Scope and review
 
 The schema follows SRS CHAT-F-001/005/008/010/011/016 and PRJ-SR-004/005, SAD 3.6
