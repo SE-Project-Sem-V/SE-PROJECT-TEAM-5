@@ -1,16 +1,19 @@
 
 const express = require("express");
 const { randomUUID } = require("node:crypto");
-const jwt = require("jsonwebtoken");
-const { AppError, sendHttpError } = require("../errors");
+const { AppError, normalizeError, sendHttpError } = require("../errors");
+const { withTransaction } = require("../db/pool");
+const { issueSession, revokeSession } = require("../services/session-service");
+const { requireAuth } = require("../middleware/require-auth");
 const {
   hashPassword,
   verifyPassword,
   PasswordInputError,
 } = require("../security/passwords");
 
-function createAuthRouter({ pool, jwtSecret }) {
+function createAuthRouter({ pool, jwtSecret, onLogout }) {
   const router = express.Router();
+  router.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
 
   router.post("/register", async (req, res, next) => {
     try {
@@ -41,23 +44,23 @@ function createAuthRouter({ pool, jwtSecret }) {
       }
 
       const id = randomUUID();
-      const result = await pool.query(
-        `INSERT INTO users (id, username, password_hash, display_name)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, username, display_name`,
-        [id, normalizedUsername, passwordHash, displayName.trim()],
-      );
+      const { user, token } = await withTransaction(pool, async client => {
+        const result = await client.query(
+          `INSERT INTO users (id, username, password_hash, display_name)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id, username, display_name`,
+          [id, normalizedUsername, passwordHash, displayName.trim()],
+        );
+        const user = result.rows[0];
+        const token = await issueSession(client, user.id, jwtSecret);
+        return { user, token };
+      });
 
-    const user = result.rows[0];
-    const token = jwt.sign({ sub: user.id }, jwtSecret, {
-        expiresIn: "2h",
-    });
-
-    return res.status(201).json({
+      return res.status(201).json({
         status: "success",
         token,
         user,
-    });
+      });
     } catch (error) {
       if (error.code === "23505") {
         return sendHttpError(res, new AppError("USERNAME_TAKEN"));
@@ -96,9 +99,7 @@ function createAuthRouter({ pool, jwtSecret }) {
         return sendHttpError(res, new AppError("INVALID_CREDENTIALS"));
       }
 
-      const token = jwt.sign({ sub: user.id }, jwtSecret, {
-        expiresIn: "2h",
-      });
+      const token = await issueSession(pool, user.id, jwtSecret);
 
       return res.status(200).json({
         status: "success",
@@ -111,6 +112,17 @@ function createAuthRouter({ pool, jwtSecret }) {
       });
     } catch (error) {
       next(error);
+    }
+  });
+
+  router.post("/logout", requireAuth({ pool, jwtSecret }), async (req, res, next) => {
+    try {
+      await revokeSession(pool, req.session);
+      if (!onLogout(req.session.id)) throw new AppError("INTERNAL_ERROR");
+      return res.status(200).json({ status: "success" });
+    } catch (error) {
+      res.locals?.logFailure?.("session.logout.failed", normalizeError(error).code);
+      return next(error);
     }
   });
 

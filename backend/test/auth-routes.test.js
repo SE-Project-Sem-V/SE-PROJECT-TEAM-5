@@ -3,21 +3,26 @@ const assert = require("node:assert/strict");
 const { randomBytes } = require("node:crypto");
 const jwt = require("jsonwebtoken");
 const { createChatServer } = require("../server");
+const { memorySessions } = require("./helpers/session-fixtures");
 
 function createMockPool() {
   const users = [];
+  const sessions = memorySessions();
 
   return {
     users,
 
     async connect() {
       return {
-        query: async () => ({ rows: [] }),
+        query: (sql, params) => this.query(sql, params),
         release: () => {},
       };
     },
 
     async query(sql, params = []) {
+      const sessionResult = sessions.query(sql, params);
+      if (sessionResult) return sessionResult;
+      if (["BEGIN", "COMMIT", "ROLLBACK"].includes(sql)) return { rows: [] };
       if (sql.includes("INSERT INTO users")) {
         const [id, username, passwordHash, displayName] = params;
 

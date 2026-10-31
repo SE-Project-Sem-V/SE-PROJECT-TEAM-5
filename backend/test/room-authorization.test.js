@@ -18,6 +18,7 @@ const { createPool } = require("../db/pool");
 const { migrate } = require("../db/migrate");
 const { hashPassword } = require("../security/passwords");
 const { createChatServer } = require("../server");
+const { prepareTokens } = require("./helpers/session-fixtures");
 
 function connect(token, url) {
   return new Promise((resolve, reject) => {
@@ -107,12 +108,7 @@ test(
 
     const [creator, member, outsider] = users;
     const jwtSecret = randomBytes(32).toString("hex");
-    const tokens = new Map(
-      users.map((user) => [
-        user.id,
-        jwt.sign({ sub: user.id }, jwtSecret, { expiresIn: "5m" }),
-      ]),
-    );
+    const tokens = new Map();
 
     try {
       const { rows: [database] } = await admin.query(
@@ -140,6 +136,8 @@ test(
         );
       }
 
+      const tokenFor = await prepareTokens(pool, users.map(user => user.id), jwtSecret);
+      for (const user of users) tokens.set(user.id, tokenFor(user.id));
       chat = createChatServer({
         pool,
         jwtSecret,

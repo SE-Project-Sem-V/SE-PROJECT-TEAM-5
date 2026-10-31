@@ -27,6 +27,7 @@ const { createRoomsRouter } = require("./routes/rooms");
 const { createSocketAuthMiddleware } = require("./sockets/socket-auth");
 const { registerMessageHandlers } = require("./sockets/message-handler");
 const { createPresenceTracker } = require("./sockets/presence");
+const { createSessionLifecycle, endSessionSocket } = require("./sockets/session-lifecycle");
 const { saveDirectMessage } = require("./services/message-service");
 
 class ServerBindError extends Error {}
@@ -53,7 +54,8 @@ function createChatServer({
   });
   app.use(cors());
   app.use(express.json());
-  app.use("/api/auth", createAuthRouter({ pool, jwtSecret }));
+  const sessions = createSessionLifecycle(pool, logger);
+  app.use("/api/auth", createAuthRouter({ pool, jwtSecret, onLogout: sessions.disconnectSession }));
 
   const io = new Server(server, {
     cors: {
@@ -80,10 +82,14 @@ function createChatServer({
   app.use(createHttpErrorHandler(logger));
 
   // Authenticate Socket.IO connections using JWT.
-  io.use(createSocketAuthMiddleware(jwtSecret, logger));
+  io.use(createSocketAuthMiddleware({ pool, jwtSecret, logger, onAuthenticated: sessions.track }));
 
   // Track authenticated users and publish presence updates.
   io.on("connection", (socket) => {
+    if (socket.data.sessionEnded) {
+      endSessionSocket(socket, socket.data.sessionFailure, logger);
+      return;
+    }
     const userId = String(socket.data.user.id);
 
     // Send the connecting user the current online-user snapshot.

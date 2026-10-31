@@ -13,6 +13,7 @@ const { hashPassword, verifyPassword, PasswordInputError, MAX_PASSWORD_BYTES } =
 const { validateJwtSecret, SecurityConfigurationError, JWT_SECRET_ERROR } = require("../security/config");
 const { createHttpErrorHandler } = require("../middleware/error-handler");
 const { createChatServer } = require("../server");
+const { memorySessions } = require("./helpers/session-fixtures");
 
 const temporarySecret = () => randomBytes(32).toString("hex");
 const unusedPool = { connect() { assert.fail("This security test must not access PostgreSQL"); } };
@@ -34,10 +35,14 @@ function assertAbsent(text, values) {
 
 async function startChat(t, options = {}) {
   const key = temporarySecret();
-  const chat = createChatServer({ pool: unusedPool, jwtSecret: key, ...options });
+  const sessions = memorySessions();
+  const pool = options.pool || unusedPool;
+  const chat = createChatServer({ ...options, pool: { ...pool,
+    query: async (sql, values) => sessions.query(sql, values) || pool.query?.(sql, values) || { rows: [] },
+  }, jwtSecret: key });
   t.after(() => chat.close());
   const address = await chat.listen(0);
-  return { chat, key, url: `http://127.0.0.1:${address.port}` };
+  return { chat, key, sessions, url: `http://127.0.0.1:${address.port}` };
 }
 
 async function connect(t, url, auth) {
@@ -259,9 +264,9 @@ test("errors after headers close the response without forwarding the raw error",
 
 test("JWT WebSocket authentication and protected acknowledgements remain intact without token logs", { timeout: 15000 }, async (t) => {
   const output = captureOutput(t);
-  const { key, url } = await startChat(t);
+  const { key, url, sessions } = await startChat(t);
   const userId = randomUUID();
-  const token = jwt.sign({ sub: userId }, key, { expiresIn: "2m" });
+  const token = sessions.token(userId, key);
   const valid = await connect(t, url, { token });
   assert.ok(valid.accepted);
   assert.deepEqual(await acknowledge(valid.socket, "protected:ping"), { status: "success", message: "pong", userId });
@@ -288,8 +293,8 @@ test("message database failures retain safe acknowledgements and redact private 
   const output = captureOutput(t);
   const secret = temporarySecret();
   const pool = { async connect() { throw Object.assign(new Error(secret), { code: "28P01", detail: secret }); } };
-  const { key, url } = await startChat(t, { pool });
-  const token = jwt.sign({ sub: randomUUID() }, key, { expiresIn: "2m" });
+  const { key, url, sessions } = await startChat(t, { pool });
+  const token = sessions.token(randomUUID(), key);
   const connection = await connect(t, url, { token });
   assert.ok(connection.accepted);
   const response = await acknowledge(connection.socket, "sendMessage", {

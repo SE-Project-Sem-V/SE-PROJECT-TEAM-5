@@ -17,6 +17,7 @@ const { createPool } = require("../db/pool");
 const { migrate } = require("../db/migrate");
 const { hashPassword } = require("../security/passwords");
 const { createChatServer } = require("../server");
+const { prepareTokens } = require("./helpers/session-fixtures");
 
 function request(url, token, method = "GET", body) {
   return new Promise((resolve, reject) => {
@@ -72,8 +73,7 @@ test(
     );
 
     const jwtSecret = randomBytes(32).toString("hex");
-    const tokenFor = (userId) =>
-      jwt.sign({ sub: userId }, jwtSecret, { expiresIn: "5m" });
+    let tokenFor;
 
     try {
       const { rows: [database] } = await admin.query(
@@ -105,6 +105,7 @@ test(
         );
       }
 
+      tokenFor = await prepareTokens(pool, [creator.id, member.id, outsider.id], jwtSecret);
       chat = createChatServer({
         pool,
         jwtSecret,

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { login, register } from '../api.js';
 
-export default function AuthScreen({ onAuth }) {
+export default function AuthScreen({ onAuth, notice }) {
   const [mode, setMode] = useState('login');
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -82,6 +82,8 @@ export default function AuthScreen({ onAuth }) {
               ? 'Choose a username, a display name and a password to start chatting.'
               : 'Welcome back. Enter your details.'}
           </p>
+
+          {notice && <p className="note" role="status" data-testid="logout-status">{notice}</p>}
 
           {error && (
             <p id="auth-error" className="error" role="alert" data-testid="auth-error">

@@ -8,6 +8,7 @@ import { fetchRoomMessages, listRooms } from './groups.js';
 import { fetchHistory } from './history.js';
 import { appendUnique, mergeHistory } from './messages.js';
 import { connectSocket } from './socket.js';
+import { createSessionGuard, onSessionFailure } from './session.js';
 
 const APP_TITLE = 'Team 5 Chat';
 const SESSION_KEY = 'chat-session';
@@ -60,6 +61,8 @@ function targetFor(peer) {
 
 export default function App() {
   const [session, setSession] = useState(loadSession);
+  const sessionGuard = useRef(createSessionGuard(session?.token));
+  const [logoutStatus, setLogoutStatus] = useState(null);
   const [peer, setPeer] = useState(null); // the open chat: a user or a group
   const [messages, setMessages] = useState({}); // { [peer.id]: [message] }
   const [unread, setUnread] = useState({}); // { [peer.id]: count }
@@ -92,6 +95,7 @@ export default function App() {
 
   // Short pop-up when the connection is lost or comes back (SAD 4.5). The banner in the chat stays until it is fixed.
   useEffect(() => {
+    if (!session) return;
     const previous = prevStatus.current;
     prevStatus.current = status;
     if (status === 'connected' && (previous === 'reconnecting' || previous === 'disconnected')) {
@@ -113,10 +117,12 @@ export default function App() {
 
   useEffect(() => {
     if (!session) return undefined;
+    const current = sessionGuard.current.capture();
     const conn = connectSocket(session.token, session.user, {
-      onStatus: setStatus,
-      onPresence: ({ userId, online }) => setPresence((prev) => ({ ...prev, [userId]: online })),
+      onStatus: (value) => { if (current()) setStatus(value); },
+      onPresence: ({ userId, online }) => { if (current()) setPresence((prev) => ({ ...prev, [userId]: online })); },
       onMessage: (msg) => {
+        if (!current()) return;
         // One-to-one messages also carry a roomId, so only treat it as a group if we know that room.
         const room = roomsRef.current.find((r) => r.id === String(msg.roomId));
         const key = room ? `room:${room.id}` : msg.from;
@@ -133,6 +139,10 @@ export default function App() {
     };
   }, [session]);
 
+  useEffect(() => onSessionFailure(({ token }) => {
+    if (sessionGuard.current.isCurrent(token)) clearSession('Your session ended. Please log in again.');
+  }), []);
+
   // After every (re)connect, drop old presence data, reload the user list and quietly reload the groups.
   useEffect(() => {
     if (status === 'connected') {
@@ -143,13 +153,35 @@ export default function App() {
   }, [status]);
 
   function handleAuth(newSession) {
+    sessionGuard.current.setToken(newSession.token);
+    setLogoutStatus(null);
     saveSession(newSession);
     setSession(newSession);
   }
 
   function handleLogout() {
-    // CHAT-F-002: ask the server to invalidate the session. Clear the local session either way.
-    logout(session.token).catch(() => {});
+    const token = session.token;
+    clearSession('Signing out...');
+    const current = sessionGuard.current.capture();
+    logout(token).then(() => {
+      if (current()) setLogoutStatus('Signed out.');
+    }).catch((error) => {
+      if (current()) setLogoutStatus(error.code === 'AUTH_REVOKED' || error.code === 'AUTH_EXPIRED'
+        ? 'Your session has already ended.'
+        : 'Signed out on this device. Server logout could not be confirmed.');
+    });
+  }
+
+  function clearSession(message) {
+    sessionGuard.current.setToken(null);
+    try { connection.current?.disconnect(); } catch { /* local cleanup must still finish */ }
+    connection.current = null;
+    peerRef.current = null;
+    roomsRef.current = [];
+    prevStatus.current = 'disconnected';
+    setPresence({});
+    setStatus('disconnected');
+    setLogoutStatus(message);
     saveSession(null);
     setSession(null);
     setPeer(null);
@@ -164,11 +196,16 @@ export default function App() {
 
   // CHAT-F-008: the groups this user belongs to. "silent" skips the error pop-up (used in the background).
   async function loadRooms(silent = false) {
+    if (!session) return;
+    const current = sessionGuard.current.capture();
     setRoomsState('loading');
     try {
-      setRooms(await listRooms(session.token));
+      const loaded = await listRooms(session.token);
+      if (!current()) return;
+      setRooms(loaded);
       setRoomsState('ready');
     } catch (err) {
+      if (!current()) return;
       setRoomsState('error');
       if (!silent) setNotice({ kind: 'warn', text: err.message });
     }
@@ -177,6 +214,7 @@ export default function App() {
   // Load the saved messages (CHAT-F-011) and merge them with what is already on screen.
   // For a one-to-one chat the backend needs the conversation to exist first, so open it (safe to repeat).
   async function openConversation(target) {
+    const current = sessionGuard.current.capture();
     const key = target.id;
     setHistoryState((prev) => ({ ...prev, [key]: 'loading' }));
     try {
@@ -185,11 +223,14 @@ export default function App() {
         history = await fetchRoomMessages(target.roomId, session.token);
       } else {
         await getOrCreateDirectConversation(target.id, session.token);
+        if (!current()) return;
         history = await fetchHistory(target.id, session.token, session.user.id);
       }
+      if (!current()) return;
       setMessages((prev) => ({ ...prev, [key]: mergeHistory(history, prev[key] || []) }));
       setHistoryState((prev) => ({ ...prev, [key]: 'loaded' }));
     } catch (err) {
+      if (!current()) return;
       setHistoryState((prev) => ({ ...prev, [key]: 'error' }));
       setNotice({ kind: 'warn', text: err.message });
     }
@@ -203,6 +244,7 @@ export default function App() {
   }
 
   function handleGroupCreated(room) {
+    if (!sessionGuard.current.isCurrent(session?.token)) return;
     setRooms((prev) => [room, ...prev.filter((r) => r.id !== room.id)]);
     setRoomsState('ready');
     handleSelect(groupPeer(room));
@@ -216,11 +258,14 @@ export default function App() {
   }
 
   async function deliver(key, tempId, content, target) {
+    const current = sessionGuard.current.capture();
     try {
       // tempId doubles as clientId so the server can recognise a retry.
       const saved = await connection.current.sendMessage(target, content, tempId);
+      if (!current()) return;
       patchMessage(key, tempId, { ...saved, state: 'sent', error: undefined });
     } catch (err) {
+      if (!current()) return;
       patchMessage(key, tempId, { state: 'failed', error: err.message });
     }
   }
@@ -246,7 +291,10 @@ export default function App() {
     deliver(peer.id, message.id, message.content, targetFor(peer));
   }
 
-  if (!session) return <AuthScreen onAuth={handleAuth} />;
+  if (!session) {
+    const current = sessionGuard.current.capture();
+    return <AuthScreen notice={logoutStatus} onAuth={(value) => { if (current()) handleAuth(value); }} />;
+  }
 
   return (
     <div className={`app ${peer ? 'has-peer' : ''}`}>

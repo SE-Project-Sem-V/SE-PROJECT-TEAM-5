@@ -10,7 +10,8 @@ function fakeSocket() {
     on(event, fn) {
       this.handlers[event] = fn;
     },
-    io: { on() {} },
+    off(event, fn) { if (this.handlers[event] === fn) delete this.handlers[event]; },
+    io: { on: vi.fn(), off: vi.fn() },
     connect: vi.fn(),
     disconnect: vi.fn(),
     timeout() {
@@ -81,5 +82,65 @@ describe('ReconnectManager heartbeat (CHAT-NF-003)', () => {
     vi.advanceTimersByTime(20000);
 
     expect(socket.disconnect).not.toHaveBeenCalled();
+  });
+
+  it('backs off inactive authentication retries, deduplicates timers and stops after six attempts', () => {
+    const socket = fakeSocket();
+    socket.connected = false;
+    socket.active = false;
+    const statuses = [];
+    const stop = createReconnectManager(socket, status => statuses.push(status));
+    const failure = { data: { code: 'INTERNAL_ERROR' } };
+    socket.handlers.connect_error(failure);
+    socket.handlers.connect_error(failure);
+    const online = window.addEventListener.mock.calls.find(([event]) => event === 'online')[1];
+    online();
+    for (const [index, delay] of [1000, 2000, 4000, 8000, 10000, 10000].entries()) {
+      vi.advanceTimersByTime(delay - 1);
+      expect(socket.connect).toHaveBeenCalledTimes(index);
+      vi.advanceTimersByTime(1);
+      expect(socket.connect).toHaveBeenCalledTimes(index + 1);
+      socket.active = true;
+      online();
+      expect(socket.connect).toHaveBeenCalledTimes(index + 1);
+      socket.active = false;
+      socket.handlers.connect_error(failure);
+    }
+    online();
+    vi.advanceTimersByTime(100000);
+    expect(socket.connect).toHaveBeenCalledTimes(6);
+    expect(statuses.at(-1)).toBe('disconnected');
+    expect(vi.getTimerCount()).toBe(0);
+    stop();
+  });
+
+  it('cleanup cancels authentication retries and removes its listeners', () => {
+    const socket = fakeSocket();
+    socket.connected = false;
+    socket.active = false;
+    const stop = createReconnectManager(socket, vi.fn());
+    socket.handlers.connect_error({ data: { code: 'INTERNAL_ERROR' } });
+    stop();
+    vi.advanceTimersByTime(20000);
+    expect(socket.connect).not.toHaveBeenCalled();
+    expect(socket.handlers).toEqual({});
+    expect(socket.io.off).toHaveBeenCalledWith('reconnect_attempt', expect.any(Function));
+    expect(window.removeEventListener).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['AUTH_REQUIRED', 'AUTH_INVALID', 'AUTH_EXPIRED', 'AUTH_REVOKED'])('cancels a scheduled retry on %s', code => {
+    const socket = fakeSocket();
+    socket.connected = false;
+    socket.active = false;
+    const ended = vi.fn();
+    const stop = createReconnectManager(socket, vi.fn(), ended);
+    socket.handlers.connect_error({ data: { code: 'INTERNAL_ERROR' } });
+    socket.handlers.connect_error({ data: { code } });
+    vi.advanceTimersByTime(20000);
+    expect(socket.connect).not.toHaveBeenCalled();
+    expect(ended).toHaveBeenCalledWith(code);
+    expect(vi.getTimerCount()).toBe(0);
+    stop();
   });
 });

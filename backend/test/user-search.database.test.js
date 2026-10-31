@@ -8,6 +8,7 @@ const { createPool } = require("../db/pool");
 const { migrate } = require("../db/migrate");
 const { hashPassword } = require("../security/passwords");
 const { createChatServer } = require("../server"); // Loads the ignored backend/.env quietly.
+const { prepareTokens } = require("./helpers/session-fixtures");
 
 test("CHATAPP-10 authenticated user search against isolated PostgreSQL", { timeout: 60000 }, async (t) => {
   const env = testDatabaseEnvironment(process.env);
@@ -59,7 +60,8 @@ test("CHATAPP-10 authenticated user search against isolated PostgreSQL", { timeo
   const logs = [];
   chat = createChatServer({ pool, jwtSecret: key, logger: { log: (...args) => logs.push(args), error: (...args) => logs.push(args) } });
   const { port } = await chat.listen();
-  const token = jwt.sign({ sub: me }, key, { expiresIn: "2m" });
+  const tokenFor = await prepareTokens(pool, ids, key);
+  const token = tokenFor(me);
   async function request(query, authorization = token, raw = false) {
     const suffix = raw ? query : `?q=${encodeURIComponent(query)}`;
     const response = await fetch(`http://127.0.0.1:${port}/api/users${suffix}`, {
@@ -84,7 +86,7 @@ test("CHATAPP-10 authenticated user search against isolated PostgreSQL", { timeo
   });
 
   await t.test("excludes the caller, including an uppercase UUID subject", async () => {
-    const uppercaseToken = jwt.sign({ sub: me.toUpperCase() }, key, { expiresIn: "2m" });
+    const uppercaseToken = tokenFor(me.toUpperCase());
     assert.deepEqual(await request("Alice", uppercaseToken), { status: 200, body: { users: [] } });
     const result = await request("ali", uppercaseToken);
     assert.ok(result.body.users.every((u) => u.id !== me));
@@ -141,7 +143,7 @@ test("CHATAPP-10 authenticated user search against isolated PostgreSQL", { timeo
       assert.deepEqual(await request("ali", auth), { status: 401, body: { status: "error", code, message: "Authentication required." } });
     }
     const departingId = ids[names.indexOf("departed")];
-    const departingToken = jwt.sign({ sub: departingId }, key, { expiresIn: "2m" });
+    const departingToken = tokenFor(departingId);
     assert.equal((await request("ali", departingToken)).status, 200);
     await pool.query("DELETE FROM users WHERE id = $1", [departingId]);
     assert.equal((await request("ali", departingToken)).status, 401);

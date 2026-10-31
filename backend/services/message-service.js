@@ -2,6 +2,7 @@
 const { withTransaction } = require("../db/pool");
 
 const { AppError } = require("../errors");
+const { assertActiveSession } = require("./session-service");
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -108,8 +109,11 @@ async function saveDirectMessage(
   recipientId,
   text,
   clientId,
+  session,
 ) {
   return withTransaction(pool, async (client) => {
+    const active = await assertActiveSession(client, session, true);
+    if (active.userId.toLowerCase() !== String(senderId).toLowerCase()) throw new AppError("AUTH_INVALID");
     const roomResult = await client.query(
       `SELECT id
        FROM chat_rooms
@@ -185,8 +189,11 @@ async function saveGroupMessage(
   roomId,
   text,
   clientId,
+  session,
 ) {
   return withTransaction(pool, async (client) => {
+    const active = await assertActiveSession(client, session, true);
+    if (active.userId.toLowerCase() !== String(senderId).toLowerCase()) throw new AppError("AUTH_INVALID");
     // Serialize group-message writes against operations that lock the room.
     const roomResult = await client.query(
       `SELECT id

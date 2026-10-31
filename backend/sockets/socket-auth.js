@@ -1,14 +1,14 @@
 
-const jwt = require("jsonwebtoken");
-const { AppError, socketConnectionError } = require("../errors");
+const { AppError, normalizeError, socketConnectionError } = require("../errors");
+const { authenticateSession } = require("../services/session-service");
 const { logFailure } = require("../logging");
 
 /**
  * Authenticates Socket.IO connections using a JWT supplied
  * in the Socket.IO handshake.
  */
-function createSocketAuthMiddleware(jwtSecret, logger = console) {
-  return function socketAuthMiddleware(socket, next) {
+function createSocketAuthMiddleware({ pool, jwtSecret, logger = console, onAuthenticated }) {
+  return async function socketAuthMiddleware(socket, next) {
     const token = socket.handshake.auth?.token;
 
     if (typeof token !== "string" || !token) {
@@ -17,24 +17,17 @@ function createSocketAuthMiddleware(jwtSecret, logger = console) {
     }
 
     try {
-      const payload = jwt.verify(token, jwtSecret);
-
-      if (
-        !payload ||
-        typeof payload !== "object" ||
-        typeof payload.sub !== "string" ||
-        !payload.sub
-      ) {
-        logFailure(logger, "auth.socket.failed", "AUTH_INVALID");
-        return next(socketConnectionError(new AppError("AUTH_INVALID", "payload")));
+      socket.data.session = await authenticateSession(pool, token, jwtSecret);
+      socket.data.user = { id: socket.data.session.userId };
+      if (onAuthenticated && !await onAuthenticated(socket)) {
+        throw socket.data.sessionFailure || new AppError("AUTH_INVALID");
       }
-
-      socket.data.user = { id: payload.sub };
       return next();
     } catch (error) {
-      const code = error instanceof jwt.TokenExpiredError ? "AUTH_EXPIRED" : "AUTH_INVALID";
+      const { code, message } = normalizeError(error);
       logFailure(logger, "auth.socket.failed", code);
-      return next(socketConnectionError(new AppError(code, "socket")));
+      const variant = code === "AUTH_INVALID" && message === "Invalid token payload" ? "payload" : "socket";
+      return next(socketConnectionError(new AppError(code, variant)));
     }
   };
 }

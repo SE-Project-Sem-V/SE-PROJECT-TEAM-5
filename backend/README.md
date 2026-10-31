@@ -3,7 +3,7 @@
 PostgreSQL infrastructure for users, rooms, membership and message persistence.
 The server uses the existing PostgreSQL pool for timestamped Socket.IO messages.
 JWT WebSocket verification and authenticated user search are implemented;
-registration/login and history endpoints are not. `/api/ping` is a liveness response; `db:check` verifies database
+registration/login, history and current-session logout are implemented. `/api/ping` is a liveness response; `db:check` verifies database
 readiness separately.
 
 ## Prerequisites
@@ -125,7 +125,7 @@ npm run test:db
   hashes, profile edits and unrelated rows are preserved. Conflicting identities,
   rooms/messages or departed fixture memberships fail instead of being replaced.
 - **Check:** verifies connectivity, applied migration checksums and readable
-  columns on all four application tables. A ping response alone proves none of
+  columns on the four application tables and `user_sessions`. A ping response alone proves none of
   these. Errors exit nonzero with diagnostics that omit raw pg error details,
   connection strings, query parameters, hashes and message content.
 
@@ -137,9 +137,9 @@ when the data is first inserted.
 Each new seed user receives an independently salted Argon2id PHC hash using
 19 MiB memory, two iterations and parallelism one. Its password is random bytes
 generated in memory and then discarded. **Seed accounts have no known login
-password.** There is no plaintext fixture credential or registration/login API.
-CHATAPP-26 supplies shared Argon2id utilities; CHATAPP-7 must connect them to real
-registration/login. Never replace an existing user's hash just to make a seed
+password.** There is no plaintext fixture credential. CHATAPP-7's registration/login
+uses CHATAPP-26's shared Argon2id utilities. Register personal test accounts through
+the application. Never replace an existing user's hash just to make a seed
 account accessible. The database seed implementation remains unchanged.
 
 ## Credential security (CHATAPP-26)
@@ -205,9 +205,8 @@ disabled when handling credentials.
   **TC-SEC-04 is not fully accepted until actual registration/login integration
   tests inspect PostgreSQL rows and captured success/failure logs/responses.**
 
-CHATAPP-24 continues to own JWT issuance/verification policy coordination. This
-change preserves the existing WebSocket verifier and does not add an expiration
-requirement, algorithm allowlist, logout/revocation, or new authentication routes.
+CHATAPP-24 continues to own JWT policy coordination. CHATAPP-8 now applies the
+shared HS256 and persisted-session verification described below to HTTP and sockets.
 
 ## Database model and integration contract
 
@@ -217,6 +216,7 @@ requirement, algorithm allowlist, logout/revocation, or new authentication route
 | `chat_rooms` | UUID PK; `direct`/`group` kind; creator FK to users; timestamp. Direct rooms have two ordered, distinct user FKs and a unique pair; creator must be one of the pair. Group rooms have a nonblank name (up to 100 characters). |
 | `room_members` | Composite PK `(room_id,user_id)`; FKs to rooms/users; joined/optional left timestamps. An index starting with `user_id` supports listing a user's rooms. |
 | `messages` | UUID PK; room/sender FKs; composite FK to the sender's membership; nonblank text; nonblank `client_id` up to 128 characters; database timestamp; unique `(sender_id,client_id)`; history index `(room_id,created_at,id)`. |
+| `user_sessions` | UUID PK matching JWT `jti`; user FK with session-only cascade on account deletion; creation/expiration/revocation timestamps; expiration and user indexes. Stores no raw JWT or signing secret. |
 
 All timestamps use `TIMESTAMPTZ`. Foreign keys restrict deletion rather than
 cascading away conversations. Keep departed membership records using `left_at`.
@@ -235,8 +235,8 @@ module. There are no session tokens or JWT secrets in these tables.
 - `password_hash` holds the complete encoded hash including parameters and salt.
   Authentication owns input policy and invokes CHATAPP-26's shared hashing/verifying
   utilities. Coordinate JWTs and logout/session revocation with CHATAPP-24.
-  Durable per-session revocation may require a later
-  migration; these four tables do not provide it.
+  Migration `002_sessions.sql` adds durable per-session revocation separately
+  from the original four application tables; migration `001_initial_schema.sql` is unchanged.
 - Search uses parameterized `ILIKE` with an explicit `!` escape character: `!`,
   `%` and `_` are escaped, and backslash is literal. The lowercase identity index
   does not accelerate arbitrary substring searches. Return only public fields;
@@ -266,26 +266,23 @@ specific results; there is no pagination. The query, caller UUID and limit are
 bound parameters, and the response explicitly projects public fields.
 
 `middleware/require-auth.js` protects HTTP requests independently of Socket.IO.
-It accepts exactly one Bearer authorization header, verifies an HS256 signature
-(the project's default signing algorithm), and checks `exp`/`nbf` when present.
-It requires a UUID `sub` and checks the account exists on every request, using
-the database's canonical UUID as the caller identity. It never accepts a caller
-ID or token from query parameters. There is no token issuance or logout/revocation
-implementation here. CHATAPP-7/24 must issue expiring tokens with the same private
-key and UUID subject and coordinate any future algorithm/revocation policy.
-The existing WebSocket verification policy is unchanged; CHATAPP-21 adds error codes.
+It accepts exactly one Bearer authorization header and uses the shared HS256
+session verifier. UUID `sub`/`jti`, a numeric expiration, an existing account and
+an active owned session are required. The database's canonical UUID supplies the
+caller identity. It never accepts a caller ID or token from query parameters.
+Socket.IO uses the same verifier; see CHATAPP-8 below.
 
 Authentication failures use HTTP 401, `WWW-Authenticate: Bearer`, and
 `{"status":"error","code":"AUTH_REQUIRED","message":"Authentication required."}`
-(or `AUTH_INVALID`/`AUTH_EXPIRED` as applicable). Invalid input uses
+(or `AUTH_INVALID`/`AUTH_EXPIRED`/`AUTH_REVOKED` as applicable). Invalid input uses
 400 with a fixed validation message. Database/unexpected failures flow through
 CHATAPP-26's final handler and return 500 with `Internal server error.`; logs contain
 only its fixed label/status. Directory responses and errors use `Cache-Control:
 no-store`. Tokens, hashes, credentials and private profile fields are never returned.
 
 No online status is inferred from database records. The frontend treats missing
-presence as unknown and displays "Presence unavailable". CHATAPP-7 is still needed
-for real registration/login through the UI; mock tokens cannot access this endpoint.
+presence as unknown and displays "Presence unavailable". Use real registration/login
+with `VITE_USE_MOCK=false`; mock tokens cannot access this endpoint.
 CHATAPP-11 owns creating/reusing direct rooms and memberships before sending to a
 new recipient. Existing messaging still requires a direct room with active members.
 
@@ -385,8 +382,8 @@ There is no new database-wide trigger constraining raw membership SQL.
 The frontend's `.env.example` and local fallback use port 5000, matching the
 server default. Set `VITE_API_URL` in the ignored frontend `.env` for a different
 backend port or HTTPS deployment, and restart Vite. Older local configurations
-pointing to port 3000 must be updated privately. Keep mock mode enabled until
-CHATAPP-7 provides real login. CHATAPP-10 changes no socket event or message contract.
+pointing to port 3000 must be updated privately. Real authentication requires
+`VITE_USE_MOCK=false`. CHATAPP-10 changes no socket event or message contract.
 
 ## Tests and isolation
 
@@ -406,7 +403,9 @@ It deliberately exits nonzero if prerequisites are missing; it never silently
 substitutes mocks or uses `PGDATABASE`.
 
 This command runs `test/database.test.js`, `test/message-handler.test.js`,
-`test/user-search.database.test.js`, and `test/rooms.database.test.js`. HTTP and messaging tests generate temporary
+`test/user-search.database.test.js`, `test/rooms.database.test.js`,
+`test/room-authorization.test.js`, `test/group-rooms.test.js`,
+`test/presence.database.test.js` and `test/logout.database.test.js`. HTTP and messaging tests generate temporary
 signing keys; they do not need a deployment `JWT_SECRET`.
 
 Each suite checks the actual target name, creates a random `chatapp_test_<uuid>`
@@ -449,9 +448,10 @@ HTTP failures preserve their status and existing message fields:
 Socket.IO connection rejections still use `connect_error` with a controlled
 `Error.message`. They also carry `error.data = { code, message }`. Existing texts
 such as `Authentication required` and `Invalid or expired token` are preserved.
-`AUTH_EXPIRED` is selected only for `jsonwebtoken.TokenExpiredError`, after normal
-JWT verification; other JWT failures use `AUTH_INVALID`. HTTP authentication keeps
-its generic `Authentication required.` text and Bearer header for all three codes.
+`AUTH_EXPIRED` covers verified JWT expiration or persisted-session expiration;
+other JWT failures use `AUTH_INVALID`. HTTP authentication keeps
+its generic `Authentication required.` text for the original three codes and Bearer
+header for all four; `AUTH_REVOKED` uses the controlled session-ended message below.
 
 Failed message acknowledgements use:
 
@@ -470,6 +470,7 @@ string or `null`; all its rules remain intact. Its failures use `INVALID_MESSAGE
 | `AUTH_REQUIRED` | 401 | Required authentication absent |
 | `AUTH_INVALID` | 401 | Invalid authentication, subject or missing HTTP account |
 | `AUTH_EXPIRED` | 401 | Verified token expiration |
+| `AUTH_REVOKED` | 401 | Current session was durably revoked |
 | `INVALID_CREDENTIALS` | 401 | Unknown username or incorrect password, indistinguishable |
 | `INVALID_INPUT` | 400 | Invalid auth/search/conversation input or malformed request size/abort |
 | `INVALID_MESSAGE` | 400 equivalent | Existing message payload rules rejected the input |
@@ -499,7 +500,7 @@ and `MEMBER_REJOIN_REQUIRED` are internal `RoomOperationError` codes. Their futu
 API/service adapter must explicitly recognize that type and choose controlled
 public mappings. Do not serialize these errors or PostgreSQL exceptions directly.
 
-CHATAPP-8 still owns logout, session revocation and connected-session expiration.
+CHATAPP-8 implements logout, session revocation and connected-session expiration.
 CHATAPP-28 adds `logging.js` for controlled failure records. It accepts only fixed
 event/code combinations and the listed metadata for each event. Example:
 
@@ -563,6 +564,83 @@ psql -h 127.0.0.1 -U chatapp -W -d chatapp_dev -c "SELECT id, room_id, created_a
 For native PostgreSQL, restart your **personal** instance through its normal
 service controls instead of the Docker commands. The same IDs/timestamps must
 remain. Do not restart a shared instance without coordinating with its owner.
+
+## Current-session logout (CHATAPP-8 / CHAT-F-002 / TC-AUTH-02)
+
+Apply the additive `002_sessions.sql` with the existing `npm run db:migrate`
+before running this version against a personal development database. This work's
+automated verification migrates only isolated schemas in the guarded test database;
+it does not migrate development data. No new environment variables, dependencies,
+signing-key changes or seed changes are required. Existing JWTs without `jti` must
+log in again after deployment. Coordinate migration numbering and deployment with
+the authentication/backend owner; do not alter migration 001.
+
+Registration inserts the Argon2id-protected user and session in one transaction.
+Every successful registration/login issues a new HS256 JWT with UUID `sub`, a
+cryptographically random UUID `jti`, and the existing two-hour lifetime. PostgreSQL
+stores only the session identifier, owning user and lifecycle timestamps, never
+the JWT, password or signing key. The shared service joins the user record and
+checks ownership, revocation and both JWT/stored expiration on protected requests.
+`nbf`, if supplied, remains subject to normal signature verification.
+
+`POST /api/auth/logout` requires `Authorization: Bearer <token from login>`.
+The request body cannot select the user or session. Success is HTTP 200 with
+`{"status":"success"}`, only after durable revocation commits and this process's
+same-session sockets are disconnected. A revoked token gets HTTP 401 with
+`{"status":"error","code":"AUTH_REVOKED","message":"This session has ended. Please log in again."}`
+on protected HTTP routes, including a repeated logout. Invalid and expired
+credentials use `AUTH_INVALID` and `AUTH_EXPIRED`; missing credentials use
+`AUTH_REQUIRED`. All auth responses are `Cache-Control: no-store`.
+
+Message transactions acquire a session `FOR SHARE` lock before room/membership
+locks; logout acquires the same session `FOR UPDATE`. An already-authorized send
+can commit before logout; logout waits for it. A send following committed
+revocation fails without persisting a message. Previously admitted HTTP reads may
+finish; this feature does not cancel requests already in progress. Session and
+registration database failures roll back and return controlled errors. A failure
+to disconnect sockets returns a controlled failure rather than claiming complete
+logout; a revocation already committed remains in effect.
+
+Socket.IO authenticates and registers the session before completing its handshake,
+then rechecks to close the connection/logout race. Session tracking is separate
+from user rooms and presence. Protected ping and message operations revalidate;
+an expiry timer also ends an idle socket. The controlled `auth:session-ended`
+event carries `{code,message}` before disconnection. Multiple sockets/tabs sharing
+one token end together. Other independent sessions continue; a user goes offline
+only when their last connection disappears. These guarantees target the current
+single backend process. Multiple instances require coordinated socket invalidation
+(for example an adapter/pub-sub mechanism); shared PostgreSQL revocation alone
+does not immediately disconnect sockets attached to another process.
+
+The frontend clears sessionStorage, socket, presence, messages, unread counts and
+conversation state immediately on local logout, then confirms the server result.
+A network/server failure explicitly says server logout could not be confirmed;
+the token can remain active remotely until a confirmed logout or expiry. Generation
+guards reject late HTTP, socket, login and group callbacks from an earlier session.
+Terminal auth codes stop automatic reconnection and return to login, while ordinary
+network failures retain reconnection. An offline tab learns revocation on its next
+server contact. Mock mode remains a UI simulation, not server-side authentication.
+
+The existing CHATAPP-28 logger allows fixed `session.check.failed`,
+`session.logout.failed` and `session.disconnect.failed` events; it receives no
+session/user identifiers, tokens, request bodies, SQL or raw exceptions. Revoked
+and expired session rows are retained; scheduled retention cleanup is a separate
+operational decision and is not required for enforcing expiration/revocation.
+
+`test/sessions.test.js` covers issuance, claims, ownership, expiry, revocation,
+locks, pending connection/logout races, abandoned connections and safe failures.
+`test/logout.database.test.js` exercises actual registration/login, protected HTTP
+and Socket.IO, multiple sessions/tabs, persistent revocation after server recreation,
+idle socket expiry, rollback, concurrent logout/send and presence in its own
+`chatapp_logout_test_<uuid>` schema. Frontend `session.test.js` covers late-result
+guards, scoped terminal failures and authentication/network reconnection behavior.
+All earlier test suites remain in the scripts. These are local automated checks;
+the browser logout flow and GitHub CI should also be reviewed before acceptance.
+
+Local verification on 2026-10-30: backend unit/security **98 passed**, PostgreSQL
+integration **78 passed** (Node includes parent tests), frontend **48 passed**;
+all had **0 failed, 0 skipped**. Frontend lint/build and `git diff --check` passed.
+All temporary test schemas were removed. No development migration or seed was run.
 
 ## Scope and review
 

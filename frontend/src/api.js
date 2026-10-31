@@ -4,6 +4,8 @@ import {
   assertSecureTransport,
 } from './config.js';
 
+import { apiError } from './session.js';
+
 const MOCK_USERS = [
   { id: 'u1', username: 'alice', online: true },
   { id: 'u2', username: 'bob', online: false },
@@ -12,19 +14,6 @@ const MOCK_USERS = [
 
 const wait = (ms = 250) =>
   new Promise((resolve) => setTimeout(resolve, ms));
-
-function errorMessage(status, data) {
-  const e = data.error;
-  const text = typeof e === 'string' ? e : e?.message || data.message;
-
-  if (text) return text;
-  if (status === 401) return 'Incorrect username or password.';
-  if (status === 400) {
-    return 'The request was not valid. Check what you entered.';
-  }
-
-  return `Something went wrong (error ${status}). Try again.`;
-}
 
 async function request(path, { method = 'GET', body, token } = {}) {
   assertSecureTransport();
@@ -49,7 +38,7 @@ async function request(path, { method = 'GET', body, token } = {}) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(errorMessage(response.status, data));
+    throw apiError(response.status, data, token);
   }
 
   return data;

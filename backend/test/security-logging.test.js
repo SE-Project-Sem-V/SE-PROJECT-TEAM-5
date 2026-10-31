@@ -6,6 +6,7 @@ const { format } = require("node:util");
 const test = require("node:test");
 const jwt = require("jsonwebtoken");
 const { createChatServer } = require("../server");
+const { memorySessions } = require("./helpers/session-fixtures");
 const { logFailure } = require("../logging");
 const { createSocketAuthMiddleware } = require("../sockets/socket-auth");
 const { registerMessageHandlers } = require("../sockets/message-handler");
@@ -73,8 +74,11 @@ test("HTTP auth, invalid input, group denial and unexpected failures have safe r
   const roomId = randomUUID();
   const memberId = randomUUID();
   let failSearch = false;
+  const sessions = memorySessions();
   const pool = {
-    async query(sql) {
+    async query(sql, values) {
+      const sessionResult = sessions.query(sql, values);
+      if (sessionResult) return sessionResult;
       if (sql.startsWith("SELECT id FROM users")) return { rows: [{ id: userId }] };
       if (failSearch) throw Object.assign(new Error(secret), { code: "28P01", detail: secret });
       return { rows: [] };
@@ -90,7 +94,7 @@ test("HTTP auth, invalid input, group denial and unexpected failures have safe r
   t.after(() => chat.close());
   const { port } = await chat.listen();
   const base = `http://127.0.0.1:${port}`;
-  const token = jwt.sign({ sub: userId }, key, { expiresIn: "2m" });
+  const token = sessions.token(userId, key);
   const auth = { Authorization: `Bearer ${token}` };
   const request = (url, options = {}) => fetch(base + url, { signal: AbortSignal.timeout(3000), ...options });
 
@@ -121,14 +125,14 @@ test("socket auth, message rejection, persistence and post-commit broadcast are 
   const f = capture();
   const secret = marker();
   const key = randomBytes(32).toString("hex");
-  const auth = createSocketAuthMiddleware(key, f.logger);
+  const auth = createSocketAuthMiddleware({ pool: {}, jwtSecret: key, logger: f.logger });
   let connectionError;
-  auth({ handshake: { auth: {} }, data: {} }, (error) => { connectionError = error; });
+  await auth({ handshake: { auth: {} }, data: {} }, (error) => { connectionError = error; });
   assert.equal(connectionError.data.code, "AUTH_REQUIRED");
-  auth({ handshake: { auth: { token: secret } }, data: {} }, (error) => { connectionError = error; });
+  await auth({ handshake: { auth: { token: secret } }, data: {} }, (error) => { connectionError = error; });
   assert.equal(connectionError.data.code, "AUTH_INVALID");
   const expiredToken = jwt.sign({ sub: randomUUID() }, key, { expiresIn: -1 });
-  auth({ handshake: { auth: { token: expiredToken } }, data: {} }, (error) => { connectionError = error; });
+  await auth({ handshake: { auth: { token: expiredToken } }, data: {} }, (error) => { connectionError = error; });
   assert.equal(connectionError.data.code, "AUTH_EXPIRED");
 
   const sender = randomUUID();
@@ -138,10 +142,16 @@ test("socket auth, message rejection, persistence and post-commit broadcast are 
     content: secret, created_at: new Date() };
   let mode = "denied";
   let committed = false;
+  const sessions = memorySessions();
+  const sessionToken = sessions.token(sender, key);
+  const claims = jwt.decode(sessionToken);
   const pool = {
+    async query(sql, values) { return sessions.query(sql, values) || { rows: [] }; },
     async connect() {
       if (mode === "save-failed") throw Object.assign(new Error(secret), { code: "28P01", detail: secret });
-      return { async query(sql) {
+      return { async query(sql, values) {
+        const sessionResult = sessions.query(sql, values);
+        if (sessionResult) return sessionResult;
         if (sql === "COMMIT") committed = true;
         if (sql.includes("FROM chat_rooms")) return mode === "denied"
           ? { rowCount: 0, rows: [] } : { rowCount: 1, rows: [{ id: roomId }] };
@@ -154,7 +164,7 @@ test("socket auth, message rejection, persistence and post-commit broadcast are 
     },
   };
   const handlers = new Map();
-  const socket = { data: { user: { id: sender } }, join() {}, on(name, handler) { handlers.set(name, handler); } };
+  const socket = { data: { user: { id: sender }, session: { id: claims.jti, userId: sender, exp: claims.exp } }, join() {}, on(name, handler) { handlers.set(name, handler); } };
   const io = { to() { return { emit() { throw new Error(secret); } }; } };
   registerMessageHandlers({ io, socket, pool, maxMessageLength: 1000, logger: f.logger });
   const send = async (payload) => {

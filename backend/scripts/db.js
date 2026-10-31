@@ -31,7 +31,8 @@ async function main() {
       await pool.query("SELECT id, kind, created_by FROM chat_rooms LIMIT 0");
       await pool.query("SELECT room_id, user_id, left_at FROM room_members LIMIT 0");
       await pool.query("SELECT id, room_id, sender_id, content, client_id, created_at FROM messages LIMIT 0");
-      console.log("Database connection, migration checksums and all four application tables verified.");
+      await pool.query("SELECT id, user_id, created_at, expires_at, revoked_at FROM user_sessions LIMIT 0");
+      console.log("Database connection, migration checksums and application/session tables verified.");
     }
   } finally {
     await pool.end();

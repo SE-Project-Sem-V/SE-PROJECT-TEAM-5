@@ -4,16 +4,25 @@ const http = require("node:http");
 const test = require("node:test");
 const jwt = require("jsonwebtoken");
 const { createChatServer } = require("../server");
+const { memorySessions } = require("./helpers/session-fixtures");
 
 async function fixture(t, query) {
   const key = randomBytes(32).toString("hex");
   const userId = randomUUID();
   const calls = [];
   const logs = [];
+  const sessions = memorySessions();
   const pool = {
     connect() { assert.fail("HTTP search must use the existing pool without opening a transaction"); },
     async query(sql, values) {
       calls.push({ sql, values });
+      if (sql.includes("FROM user_sessions")) {
+        if (query) {
+          const account = await query(sql, [values[1]], userId);
+          if (!account.rows.length) return account;
+        }
+        return sessions.query(sql, values);
+      }
       if (query) return query(sql, values, userId);
       return { rows: values.length === 1 ? [{ id: userId }] : [] };
     },
@@ -24,7 +33,7 @@ async function fixture(t, query) {
   t.after(() => chat.close());
   const address = await chat.listen();
   const url = `http://127.0.0.1:${address.port}`;
-  const token = jwt.sign({ sub: userId }, key, { expiresIn: "2m" });
+  const token = sessions.token(userId, key);
   async function request(suffix = "?q=ali", authorization = `Bearer ${token}`) {
     const response = await fetch(`${url}/api/users${suffix}`, {
       headers: authorization === null ? {} : { Authorization: authorization },
@@ -73,14 +82,17 @@ test("missing or malformed HTTP authorization is rejected before database access
 
 test("HTTP search rejects expired, tampered, premature, unsigned and wrong-algorithm tokens", async (t) => {
   const f = await fixture(t);
+  assert.equal((await f.request("?q=")).response.status, 200);
+  f.calls.length = 0;
+  const claims = jwt.decode(f.token);
   const [header, payload, signature] = f.token.split(".");
   const tampered = `${header}.${payload}.${signature[0] === "A" ? "B" : "A"}${signature.slice(1)}`;
   const tokens = [
-    jwt.sign({ sub: f.userId }, f.key, { expiresIn: -1 }), tampered,
-    jwt.sign({ sub: f.userId }, randomBytes(32).toString("hex"), { expiresIn: "2m" }),
-    jwt.sign({ sub: f.userId }, f.key, { notBefore: "1h", expiresIn: "2h" }),
-    jwt.sign({ sub: f.userId }, "", { algorithm: "none" }),
-    jwt.sign({ sub: f.userId }, f.key, { algorithm: "HS384" }),
+    jwt.sign({ ...claims, iat: claims.iat - 3600, exp: Math.floor(Date.now() / 1000) - 1 }, f.key), tampered,
+    jwt.sign(claims, randomBytes(32).toString("hex")),
+    jwt.sign({ ...claims, nbf: claims.iat + 3600, exp: claims.iat + 7200 }, f.key),
+    jwt.sign(claims, "", { algorithm: "none" }),
+    jwt.sign(claims, f.key, { algorithm: "HS384" }),
   ];
   for (const [index, token] of tokens.entries()) {
     safeFailure(await f.request("?q=ali", `Bearer ${token}`), 401, "Authentication required.",
@@ -93,8 +105,13 @@ test("HTTP search rejects expired, tampered, premature, unsigned and wrong-algor
 
 test("HTTP subjects must be UUID strings before they reach PostgreSQL", async (t) => {
   const f = await fixture(t);
+  assert.equal((await f.request("?q=")).response.status, 200);
+  f.calls.length = 0;
+  const claims = jwt.decode(f.token);
   for (const sub of [undefined, null, "", 123, {}, [], "not-a-uuid", "' OR TRUE --", "00000000-0000-0000-0000-000000000000"]) {
-    const token = jwt.sign(sub === undefined ? {} : { sub }, f.key, { expiresIn: "2m" });
+    const payload = { ...claims, sub };
+    if (sub === undefined) delete payload.sub;
+    const token = jwt.sign(payload, f.key);
     safeFailure(await f.request("?q=ali", `Bearer ${token}`), 401, "Authentication required.");
   }
   safeFailure(await f.request("?q=ali", `Bearer ${jwt.sign("text payload", f.key)}`), 401, "Authentication required.");
@@ -105,7 +122,7 @@ test("a signed subject must belong to an existing user", async (t) => {
   const f = await fixture(t, () => ({ rows: [] }));
   safeFailure(await f.request(), 401, "Authentication required.");
   assert.equal(f.calls.length, 1);
-  assert.deepEqual(f.calls[0].values, [f.userId]);
+  assert.deepEqual(f.calls[0].values, [jwt.decode(f.token).jti, f.userId]);
 });
 
 test("duplicate Authorization headers are rejected rather than choosing an identity", async (t) => {
@@ -153,7 +170,7 @@ test("malformed, repeated, structured, unknown and oversized query parameters re
     assert.equal(result.body.code, "INVALID_INPUT");
     assert.ok(result.body.message.startsWith("Use a single q parameter"));
   }
-  assert.ok(f.calls.every(({ values }) => values.length === 1));
+  assert.ok(f.calls.every(({ sql }) => sql.includes("FROM user_sessions")));
   assert.equal(f.logs.length, 15);
   assert.ok(f.logs.every(([line]) => JSON.parse(line).code === "INVALID_INPUT"));
 });

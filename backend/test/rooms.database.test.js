@@ -57,12 +57,12 @@ test("CHATAPP-50 room operations against isolated PostgreSQL", { timeout: 60000 
     (SELECT count(*)::int FROM room_members) AS members`)).rows[0];
   const group = (memberIds = [], name = "Test group") => createGroupRoom(pool, { name, createdBy: bob, memberIds });
 
-  await t.test("uses the dedicated database, private schema and existing migration only", async () => {
+  await t.test("uses the dedicated database, private schema and committed migrations", async () => {
     const { rows: [target] } = await pool.query("SELECT current_database() AS name, current_schema() AS schema");
     assert.equal(target.name, env.PGDATABASE);
     assert.equal(target.schema, schema);
     assert.deepEqual((await pool.query("SELECT name FROM schema_migrations ORDER BY name")).rows,
-      [{ name: "001_initial_schema.sql" }]);
+      [{ name: "001_initial_schema.sql" }, { name: "002_sessions.sql" }]);
   });
 
   await t.test("creates a group atomically with active creator and selected members", async () => {
