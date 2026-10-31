@@ -17,6 +17,7 @@ const ERROR_CATALOGUE = Object.freeze(Object.fromEntries(Object.entries({
   CLIENT_ID_CONFLICT: [409, "This clientId was already used for a different message."],
   GROUP_ROOM_NOT_FOUND: [404, "The group conversation does not exist."],
   ROOM_ACCESS_DENIED: [403, "You must be an active member of this group to send messages."],
+  SECURE_TRANSPORT_REQUIRED: [403, "Secure HTTPS/WSS transport is required."],
   NOT_FOUND: [404, "Not found."],
   INTERNAL_ERROR: [500, "Internal server error."],
 }).map(([code, [status, message]]) => [code, Object.freeze({ code, status, message })])));

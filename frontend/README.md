@@ -16,6 +16,22 @@ CHATAPP-7 registration/login is still needed to obtain a real session through th
 UI; mock session tokens are not accepted by the backend. Keep mock mode for UI
 development until that integration is available.
 
+## HTTPS/WSS configuration (CHATAPP-23)
+
+For local `npm run dev`, HTTP is allowed only for the literal backend hosts
+`localhost`, `127.0.0.1` or `[::1]`. Unsupported schemes, credentials in URLs,
+query/fragment configuration and deceptive localhost forms are rejected.
+Production builds require an HTTPS backend URL, including when previewed locally.
+Use `VITE_USE_MOCK=false` and `VITE_API_URL=https://<backend-host>` before
+`npm run build`; Vite embeds these public settings at build time. Serve the
+frontend itself over HTTPS. Socket.IO derives WSS (and HTTPS polling) from this
+HTTPS URL; do not configure a separate `ws://` or `wss://` API base URL.
+
+The backend must run in secure proxy mode behind a configured same-host TLS
+proxy; see `backend/README.md`. Certificates and proxy deployment are external
+requirements. This frontend guard is not server-side enforcement. Existing
+authentication/logout, groups, messaging and presence adapters are unchanged.
+
 ## Checks (also run by CI)
 ```bash
 npm run lint && npm test && npm run build

@@ -14,6 +14,8 @@ const { createAuthRouter } = require("./routes/auth");
 const { createPool } = require("./db/pool");
 const { databaseFailureCode } = require("./db/config");
 const { logFailure } = require("./logging");
+const { createTransportPolicy, TransportConfigurationError } = require("./security/transport");
+const { AppError, sendHttpError } = require("./errors");
 const {
   validateJwtSecret,
   SecurityConfigurationError,
@@ -35,7 +37,8 @@ class ServerBindError extends Error {}
 function createChatServer({
   pool,
   jwtSecret = process.env.JWT_SECRET,
-  clientUrl = process.env.CLIENT_URL || "http://localhost:5173",
+  transportEnv = process.env,
+  clientUrl = transportEnv.CLIENT_URL || "http://localhost:5173",
   maxMessageLength = Number(process.env.MAX_MESSAGE_LENGTH) || 1000,
   logger = console,
 } = {}) {
@@ -44,24 +47,53 @@ function createChatServer({
   }
 
   validateJwtSecret(jwtSecret);
+  const transport = createTransportPolicy({ ...transportEnv, CLIENT_URL: clientUrl });
 
   const app = express();
   const server = http.createServer(app);
+  app.set("trust proxy", transport.mode === "proxy" ? transport.isTrustedProxy : false);
 
   app.use((_req, res, next) => {
     res.locals.logFailure = (event, code, metadata) => logFailure(logger, event, code, metadata);
     next();
   });
-  app.use(cors());
+  app.use((req, res, next) => {
+    if (!transport.allows(req)) return sendHttpError(res, new AppError("SECURE_TRANSPORT_REQUIRED"));
+    next();
+  });
+  app.use(cors({ origin: transport.clientOrigin }));
   app.use(express.json());
   const sessions = createSessionLifecycle(pool, logger);
   app.use("/api/auth", createAuthRouter({ pool, jwtSecret, onLogout: sessions.disconnectSession }));
 
   const io = new Server(server, {
+    // The Vite frontend bundles its client. Disable the separate static-file
+    // handler, which otherwise bypasses both Express and Engine.IO middleware.
+    serveClient: false,
     cors: {
-      origin: clientUrl,
+      origin: transport.clientOrigin,
       methods: ["GET", "POST"],
+      // Validate transport before completing a preflight successfully.
+      preflightContinue: true,
     },
+  });
+  // Express does not handle Engine.IO traffic. This runs on every polling
+  // request and upgrade, before namespace authentication or database access.
+  io.engine.use((req, res, next) => {
+    if (!transport.allows(req)) {
+      logFailure(logger, "http.request.failed", "SECURE_TRANSPORT_REQUIRED", { status: 403 });
+      // Engine.IO owns the wire response (including WebSocket upgrade failures).
+      // Passing only a fixed error preserves its protocol and sanitization.
+      return next(new AppError("SECURE_TRANSPORT_REQUIRED"));
+    }
+    if (req.method === "OPTIONS") {
+      // CORS has already supplied its headers; do not run a polling handshake
+      // or namespace authentication for an allowed preflight.
+      res.statusCode = 204;
+      res.setHeader("Content-Length", "0");
+      return res.end();
+    }
+    next();
   });
 
   const presence = createPresenceTracker(io, logger);
@@ -124,7 +156,8 @@ function createChatServer({
     server,
     io,
 
-    listen(port = 0, host = "127.0.0.1") {
+    listen(port = 0, host = transport.host) {
+      transport.validateListener(host);
       return new Promise((resolve, reject) => {
         const onError = (error) => {
           server.off("listening", onListening);
@@ -156,14 +189,15 @@ function createChatServer({
 
 async function main() {
   const jwtSecret = validateJwtSecret(process.env.JWT_SECRET);
+  createTransportPolicy(process.env);
 
   const pool = createPool(process.env, console);
   const chat = createChatServer({ pool, jwtSecret });
   const port = Number(process.env.PORT) || 5000;
 
   try {
-    await chat.listen(port, "0.0.0.0");
-    console.log(`Chat backend running on http://localhost:${port}`);
+    await chat.listen(port);
+    console.log(`Chat backend listening on loopback port ${port}; remote access requires a TLS proxy.`);
   } catch (error) {
     await pool.end();
     throw new ServerBindError();
@@ -206,7 +240,7 @@ function installFatalHandlers(logger = console) {
 if (require.main === module) {
   installFatalHandlers();
   main().catch((error) => {
-    const code = error instanceof SecurityConfigurationError ? "CONFIG_FAILURE"
+    const code = error instanceof SecurityConfigurationError || error instanceof TransportConfigurationError ? "CONFIG_FAILURE"
       : error instanceof ServerBindError ? "SERVER_BIND_FAILED" : databaseFailureCode(error);
     logFailure(console, "server.start.failed", code);
     process.exitCode = 1;
