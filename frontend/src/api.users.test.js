@@ -29,10 +29,11 @@ describe('CHATAPP-10 real user-search API adapter', () => {
 
   it('maps the public response and keeps unavailable presence distinct from offline', async () => {
     const privateValue = crypto.randomUUID();
-    fetch.mockResolvedValue(reply({ users: [{ id: 'user-a', username: 'Alina', password_hash: privateValue, email: privateValue }] }));
+    fetch.mockResolvedValue(reply({ users: [{ id: 'user-a', username: 'Alina', display_name: 'Alina Public',
+      status_message: 'Available', password_hash: privateValue, email: privateValue, token: privateValue, session_id: privateValue }] }));
     const users = await searchUsers('ali', crypto.randomUUID());
     expect(JSON.stringify(users).includes(privateValue)).toBe(false);
-    expect(users).toEqual([{ id: 'user-a', username: 'Alina', online: null }]);
+    expect(users).toEqual([{ id: 'user-a', username: 'Alina', displayName: 'Alina Public', statusMessage: 'Available', online: null }]);
   });
 
   it('preserves explicit online/offline booleans and treats other presence values as unknown', async () => {
@@ -52,7 +53,8 @@ describe('CHATAPP-10 real user-search API adapter', () => {
 
   it('retains the existing array response compatibility', async () => {
     fetch.mockResolvedValue(reply([{ userId: 'a', username: 'alice', online: false }]));
-    expect(await searchUsers('ali', crypto.randomUUID())).toEqual([{ id: 'a', username: 'alice', online: false }]);
+    expect(await searchUsers('ali', crypto.randomUUID())).toEqual([{ id: 'a', username: 'alice',
+      displayName: 'alice', statusMessage: null, online: false }]);
   });
 
   it.each([

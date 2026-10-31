@@ -87,6 +87,9 @@ export default function UserList({ token, meId, selectedId, unread, onSelect, pr
               )}
               <span className="user-text">
                 <span className="user-name">{user.displayName || user.username}</span>
+                {user.displayName && user.displayName !== user.username &&
+                  <span className="user-handle">@{user.username}</span>}
+                {user.statusMessage && <span className="profile-message">{user.statusMessage}</span>}
                 <span className="user-status">
                   {typeof user.online === 'boolean' ? (user.online ? 'Online' : 'Offline') : 'Presence unavailable'}
                 </span>

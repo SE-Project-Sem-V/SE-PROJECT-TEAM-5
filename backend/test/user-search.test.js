@@ -58,12 +58,13 @@ test("HTTP search accepts a signed bearer token and returns only public fields",
   const resultId = randomUUID();
   const f = await fixture(t, (_sql, values, userId) => ({ rows: values.length === 1
     ? [{ id: userId }]
-    : [{ id: resultId, username: "Alina", password_hash: privateValue, email: privateValue, status_message: privateValue, token: privateValue }],
+    : [{ id: resultId, username: "Alina", display_name: "Alina Public", status_message: "Available",
+      password_hash: privateValue, email: privateValue, token: privateValue, session_id: privateValue }],
   }));
   const result = await f.request("?q=ali", `bearer ${f.token}`);
   assert.equal(result.response.status, 200);
   assert.ok(!JSON.stringify(result.body).includes(privateValue), "Private field in response (withheld)");
-  assert.deepEqual(result.body, { users: [{ id: resultId, username: "Alina" }] });
+  assert.deepEqual(result.body, { users: [{ id: resultId, username: "Alina", display_name: "Alina Public", status_message: "Available" }] });
   assert.equal(result.response.headers.get("cache-control"), "no-store");
   assert.equal(f.calls.length, 2);
 });

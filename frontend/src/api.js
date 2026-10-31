@@ -11,6 +11,14 @@ const MOCK_USERS = [
   { id: 'u2', username: 'bob', online: false },
   { id: 'u3', username: 'charlie', online: true },
 ];
+// UI simulation only. Actual persistence is provided by PostgreSQL in real mode.
+const mockProfiles = new Map();
+function mockProfile(username) {
+  if (!mockProfiles.has(username)) mockProfiles.set(username, {
+    id: `me-${username}`, username, display_name: username, status_message: null,
+  });
+  return mockProfiles.get(username);
+}
 
 const wait = (ms = 250) =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -48,10 +56,8 @@ async function request(path, { method = 'GET', body, token } = {}) {
 function toSession(data, username) {
   return {
     token: data.token,
-    user: {
-      id: String(data.userId ?? data.user?.id),
-      username,
-    },
+    user: normalizeUser({ ...data.user, id: data.userId ?? data.user?.id,
+      username: data.user?.username ?? username }),
   };
 }
 
@@ -63,7 +69,7 @@ export async function login(username, password) {
 
     return {
       token: `mock-${username}`,
-      user: { id: `me-${username}`, username },
+      user: normalizeUser(mockProfile(username)),
     };
   }
 
@@ -81,13 +87,10 @@ export async function register(username, password, displayName) {
 
     if (!password) throw new Error('Enter a password.');
 
+    mockProfiles.set(username, { ...mockProfile(username), display_name: displayName });
     return {
       token: `mock-${username}`,
-      user: {
-        id: `me-${username}`,
-        username,
-        display_name: displayName,
-      },
+      user: normalizeUser(mockProfile(username)),
     };
   }
 
@@ -117,8 +120,31 @@ function normalizeUser(user) {
   return {
     id: String(user.id ?? user.userId),
     username: user.username,
+    displayName: user.display_name ?? user.displayName ?? user.username,
+    statusMessage: user.status_message ?? user.statusMessage ?? null,
     online: typeof user.online === 'boolean' ? user.online : null,
   };
+}
+
+export async function getMyProfile(token) {
+  if (USE_MOCK) {
+    await wait();
+    return normalizeUser(mockProfile(token.replace(/^mock-/, '')));
+  }
+  const data = await request('/api/users/me', { token });
+  return normalizeUser(data.user);
+}
+
+export async function updateMyProfile(patch, token) {
+  if (USE_MOCK) {
+    await wait();
+    const profile = mockProfile(token.replace(/^mock-/, ''));
+    if (Object.hasOwn(patch, 'displayName')) profile.display_name = patch.displayName;
+    if (Object.hasOwn(patch, 'statusMessage')) profile.status_message = patch.statusMessage || null;
+    return normalizeUser(profile);
+  }
+  const data = await request('/api/users/me', { method: 'PATCH', body: patch, token });
+  return normalizeUser(data.user);
 }
 
 export async function searchUsers(query, token) {
@@ -131,7 +157,7 @@ export async function searchUsers(query, token) {
 
     return MOCK_USERS.filter((user) =>
       user.username.includes(q.toLowerCase()),
-    );
+    ).map(user => normalizeUser({ ...user, ...mockProfiles.get(user.username), id: user.id }));
   }
 
   const data = await request(

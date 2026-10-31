@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { login, logout, register, searchUsers } from './api.js';
+import { getMyProfile, updateMyProfile, login, logout, register, searchUsers } from './api.js';
 
 describe('mock api', () => {
+  it('keeps mock profile fields consistent through registration, partial edits and relogin', async () => {
+    const session = await register('profile_demo', 'temporary-test-input', 'Demo display');
+    expect(session.user.displayName).toBe('Demo display');
+    expect((await getMyProfile(session.token)).displayName).toBe('Demo display');
+    await updateMyProfile({ statusMessage: 'Demo status' }, session.token);
+    expect((await login('profile_demo', 'temporary-test-input')).user.statusMessage).toBe('Demo status');
+    const cleared = await updateMyProfile({ statusMessage: '' }, session.token);
+    expect(cleared.statusMessage).toBeNull();
+    expect(cleared.displayName).toBe('Demo display');
+  });
   it('registers a user and returns a token', async () => {
     const result = await register('maansi', 'secret1');
     expect(result.token).toBeTruthy();

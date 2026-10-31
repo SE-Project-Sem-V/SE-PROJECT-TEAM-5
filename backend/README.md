@@ -247,11 +247,12 @@ module. There are no session tokens or JWT secrets in these tables.
 `GET /api/users?q=ali` requires `Authorization: Bearer <session-token>` and returns:
 
 ```json
-{"users":[{"id":"10000000-0000-4000-8000-000000000002","username":"Alina"}]}
+{"users":[{"id":"10000000-0000-4000-8000-000000000002","username":"Alina","display_name":"Alina","status_message":null}]}
 ```
 
 The example is illustrative. Results come from registered PostgreSQL users,
-exclude the authenticated caller, and contain only `id` and `username`. Missing,
+exclude the authenticated caller, and contain only `id`, `username`,
+`display_name` and `status_message`. Missing,
 empty or whitespace-only `q`, and queries with no matches, return HTTP 200 with
 `{"users":[]}` (TC-SEARCH-02). Selection remains a frontend action that opens the
 existing chat panel. Search creates no rooms, memberships or messages.
@@ -278,7 +279,8 @@ Authentication failures use HTTP 401, `WWW-Authenticate: Bearer`, and
 400 with a fixed validation message. Database/unexpected failures flow through
 CHATAPP-26's final handler and return 500 with `Internal server error.`; logs contain
 only its fixed label/status. Directory responses and errors use `Cache-Control:
-no-store`. Tokens, hashes, credentials and private profile fields are never returned.
+no-store`. Tokens, hashes, credentials and unapproved account fields are never returned;
+display name and custom status are intentionally public to authenticated directory users.
 
 No online status is inferred from database records. The frontend treats missing
 presence as unknown and displays "Presence unavailable". Use real registration/login
@@ -724,6 +726,48 @@ HTTP, real polling/WS and upgrades, spoofed/ambiguous headers, pre-auth rejectio
 safe responses/logs, authenticated message ACK/delivery and session logout.
 Run `npm test`, guarded `npm run test:db`, and the frontend tests/lint/build.
 No database migration, new dependency or signing-key change is required.
+
+## Profile and custom status (CHATAPP-9 / CHAT-F-016 / TC-PROF-01)
+
+`GET /api/users/me` and `PATCH /api/users/me` require the existing Bearer JWT
+and active persisted session. Both use `Cache-Control: no-store`. The PATCH body
+may contain `displayName`, `statusMessage`, or both, for example:
+
+```json
+{"displayName":"Alice","statusMessage":"Available later"}
+```
+
+Both endpoints return a `user` object with `id`, `username`, `display_name` and
+`status_message`. Search now returns
+the same four public user fields in its existing `users` array. These profile
+fields are intentionally visible to other authenticated directory users. Hashes,
+tokens, sessions, email and account timestamps are not included. Search still
+matches only usernames with the same escaping, order, limits and caller exclusion.
+
+Display names must be nonblank and at most 64 Unicode characters; custom status
+is at most 280. Empty-string or null status clears it. Other whitespace, Unicode
+and HTML-like text are preserved as entered and rendered as plain text. NUL,
+unpaired surrogates, invalid types, empty patches and unknown fields are rejected
+with controlled errors. Omitted fields remain unchanged. Identity comes only
+from the verified session, never a body/URL target ID. Username/password edits
+are outside this API. Validation failures use `INVALID_INPUT` (or the existing
+`INVALID_JSON` parser error); authentication and server errors keep their existing
+codes. Neither drafts nor raw database exceptions are logged.
+
+Updates take the existing session SHARE lock inside a transaction before writing
+the user row. Logout either waits for an admitted update or commits first and
+prevents that update. PostgreSQL's existing timestamp trigger and schema remain
+unchanged; no migration or runtime dependency is required. The separate existing
+registration limit of 100 versus the database's 64 should be coordinated with
+Anand rather than widening the schema here.
+
+`test/profile.test.js` covers HTTP validation, ownership, Unicode, safe fields and
+errors; `test/profile.database.test.js` covers real registration/login, durable
+profiles, directory visibility and actual session lock contention in both orders.
+It migrates and removes only a private schema in the guarded `_test` database.
+TC-PROF-01 browser acceptance: edit both fields, save, refresh and logout/login;
+then search from another authenticated account and confirm the persisted display
+name/status. Profiles refresh through reads/search, without new broadcast events.
 
 ## Scope and review
 

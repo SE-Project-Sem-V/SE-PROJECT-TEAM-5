@@ -32,6 +32,29 @@ proxy; see `backend/README.md`. Certificates and proxy deployment are external
 requirements. This frontend guard is not server-side enforcement. Existing
 authentication/logout, groups, messaging and presence adapters are unchanged.
 
+## Profile and custom status (CHATAPP-9)
+
+The sidebar's Profile button opens an accessible editor with username (read-only),
+display name and custom status. Save persists changes through authenticated
+`GET/PATCH /api/users/me`; Cancel discards the draft. Display names are nonblank
+and limited to 64 Unicode characters, status to 280; clearing status stores null.
+The profile loads after authentication and page refresh. It has separate state
+from the JWT/session, so saving does not reconnect Socket.IO. Logout clears it,
+and late responses from an earlier session are ignored.
+
+Authenticated directory results include public display name/status, mapped to
+`displayName`/`statusMessage` in the adapter. The list shows a username handle
+alongside a different display name, with custom status separate from automatic
+online/offline presence. New searches retrieve current profiles; no live profile
+broadcasts or group sender/member renaming are introduced. User text is rendered
+as text, not HTML. Mock mode simulates edits/relogin in memory only; refresh
+persistence must be verified with the real PostgreSQL backend.
+
+Profile tests include adapters, mounted App/editor lifecycle and late-response
+races using the React 18 development-only test renderer. Browser acceptance is
+still needed for actual focus, screen-reader behavior and mobile layout, plus
+two-account edit/relogin/search over the deployed HTTPS/WSS endpoint.
+
 ## Checks (also run by CI)
 ```bash
 npm run lint && npm test && npm run build
@@ -44,7 +67,7 @@ REST
 - `POST /api/auth/login` (SAD): body `{ username, password }`, response `{ status: "ok", token, userId }`. Errors: 401 invalid credentials, 400 bad request.
 - `POST /api/auth/register` (assumed): same body. Response either the same as login, or just `{ status: "ok" }` (the UI then logs in).
 - `POST /api/auth/logout` (assumed): header `Authorization: Bearer <token>`. Must invalidate the session and its socket (CHAT-F-002).
-- `GET /api/users?q=text` (CHATAPP-10): header `Authorization: Bearer <token>`, response `{ users: [{ id, username }] }`. Case-insensitive literal username substring search, trimmed query of at most 64 characters, at most 20 results sorted by lowercase username then ID. The caller is excluded. Empty/no-match queries return `{ users: [] }`; arrays, repeated parameters, malformed encoding, control characters and extra parameters are rejected. No pagination or display-name search is implemented.
+- `GET /api/users?q=text` (CHATAPP-10/9): header `Authorization: Bearer <token>`, response `{ users: [{ id, username, display_name, status_message }] }`. Case-insensitive literal username substring search, trimmed query of at most 64 characters, at most 20 results sorted by lowercase username then ID. The caller is excluded. Empty/no-match queries return `{ users: [] }`; arrays, repeated parameters, malformed encoding, control characters and extra parameters are rejected. No pagination or display-name search is implemented.
 - Presence is unavailable from this endpoint. The adapter represents it as `online: null` and the list displays "Presence unavailable" without an offline indicator. Explicit mock/presence booleans still display Online/Offline. Selecting a result continues opening the existing chat panel; it does not create a direct room (CHATAPP-11).
 - Search errors: 400 invalid query, 401 missing/invalid authentication or nonexistent caller, 500 database/server failure, with `{ status: "error", code: "ERROR_CODE", message: "controlled message" }`. The adapter also retains `{ error: "message" }` and `{ error: { code, message } }` compatibility. The list keeps its generic error state.
 
