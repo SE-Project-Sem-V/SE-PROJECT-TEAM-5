@@ -395,6 +395,8 @@ test("TC-AUTH-02 durable current-session logout against isolated PostgreSQL", { 
       else global.window = previousWindow;
     });
     let unavailable = false;
+    let operationUnavailable = false;
+    let databaseFailures = 0;
     const checks = new Map();
     const target = await start({
       connect: () => pool.connect(),
@@ -402,6 +404,22 @@ test("TC-AUTH-02 durable current-session logout against isolated PostgreSQL", { 
         if (sql.includes("FROM user_sessions")) {
           checks.set(values[0], (checks.get(values[0]) || 0) + 1);
           if (unavailable) throw new Error(privateValue);
+          if (operationUnavailable) {
+            // A real, transaction-local PostgreSQL statement timeout models an
+            // unavailable session store without stopping or changing the server.
+            const client = await pool.connect();
+            try {
+              await client.query("BEGIN");
+              await client.query("SET LOCAL statement_timeout = '20ms'");
+              await client.query("SELECT pg_sleep(1)");
+            } catch (error) {
+              assert.equal(error.code, "57014");
+              databaseFailures += 1;
+              throw error;
+            } finally {
+              try { await client.query("ROLLBACK"); } finally { client.release(); }
+            }
+          }
         }
         return pool.query(sql, values);
       },
@@ -490,6 +508,34 @@ test("TC-AUTH-02 durable current-session logout against isolated PostgreSQL", { 
           unavailable = false;
           outgoing.cleanup(); replaced.cleanup(); replacement?.cleanup();
         }
+      });
+
+      await t.test("an established client recovers after a real PostgreSQL failure on a protected operation", async () => {
+        const connection = managed(await login("logout_alice"));
+        try {
+          const connected = event(connection.socket, "connect");
+          connection.socket.connect();
+          await connected;
+          assert.equal((await ping(connection.socket)).status, "success");
+          const failuresBefore = databaseFailures;
+          operationUnavailable = true;
+          const disconnected = event(connection.socket, "disconnect");
+          const response = await ping(connection.socket);
+          assert.equal(response.code, "INTERNAL_ERROR");
+          assert.equal(await disconnected, "io server disconnect");
+          assert.equal(connection.socket.active, false);
+          assert.ok(databaseFailures > failuresBefore);
+          // Keep the database unavailable through the first explicit retry.
+          const rejected = event(connection.socket, "connect_error");
+          assert.equal((await rejected).data.code, "INTERNAL_ERROR");
+          operationUnavailable = false;
+          const recovered = event(connection.socket, "connect");
+          await recovered;
+          assert.equal((await ping(connection.socket)).status, "success");
+          assert.equal((await ping(connection.socket)).userId, alice);
+          assert.deepEqual(connection.ended, []);
+          assert.equal(connection.opens, 3);
+        } finally { operationUnavailable = false; connection.cleanup(); }
       });
 
       await t.test("revoked, expired and invalid sessions never retry", async () => {

@@ -118,7 +118,8 @@ test("CHATAPP-50 room operations against isolated PostgreSQL", { timeout: 60000 
   await t.test("rejects unknown creators and rolls back group creation on an invalid member", async () => {
     const before = await counts();
     await rejectCode(createGroupRoom(pool, { name: "Unknown creator", createdBy: randomUUID() }), "23503");
-    await rejectCode(group([alice, randomUUID()]), "23503");
+    await assert.rejects(group([alice, randomUUID()]), error =>
+      error instanceof RoomOperationError && error.code === "MEMBER_NOT_FOUND");
     await rejectCode(group([alice, "not-a-uuid"]), "22P02");
     assert.deepEqual(await counts(), before);
     assert.equal((await pool.query("SELECT 1 AS usable")).rows[0].usable, 1);
@@ -128,7 +129,8 @@ test("CHATAPP-50 room operations against isolated PostgreSQL", { timeout: 60000 
     const room = await group();
     const before = await counts();
     await rejectCode(addGroupMembers(pool, randomUUID(), [alice], bob), "ROOM_NOT_FOUND");
-    await rejectCode(addGroupMembers(pool, room.id, [alice, randomUUID()], bob), "23503");
+    await assert.rejects(addGroupMembers(pool, room.id, [alice, randomUUID()], bob), error =>
+      error instanceof RoomOperationError && error.code === "MEMBER_NOT_FOUND");
     await rejectCode(addGroupMembers(pool, room.id, [alice, "not-a-uuid"], bob), "22P02");
     assert.deepEqual(await counts(), before);
     assert.deepEqual((await listRoomMembers(pool, room.id)).map((m) => m.id), [bob]);

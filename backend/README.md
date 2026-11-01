@@ -484,6 +484,14 @@ string or `null`; all its rules remain intact. Its failures use `INVALID_MESSAGE
 | `CONVERSATION_NOT_FOUND` | 404 equivalent | Sending found no direct room for the pair |
 | `ROOM_FORBIDDEN` | 403 equivalent | Both participants are not active members |
 | `CLIENT_ID_CONFLICT` | 409 equivalent | Retry ID reused with different room/content |
+| `GROUP_ROOM_NOT_FOUND` | 404 equivalent | Group message target does not exist |
+| `ROOM_ACCESS_DENIED` | 403 | Caller is not an active group member |
+| `ROOM_NOT_FOUND` | 404 | Group HTTP target does not exist |
+| `ROOM_CREATOR_REQUIRED` | 403 | Only the creator may add members |
+| `GROUP_ROOM_REQUIRED` | 400 | Direct-room membership cannot be changed here |
+| `MEMBER_REJOIN_REQUIRED` | 409 | This operation cannot re-add departed members |
+| `MEMBER_NOT_FOUND` | 404 | At least one selected member account does not exist |
+| `SECURE_TRANSPORT_REQUIRED` | 403 | HTTPS/WSS transport policy rejected the request |
 | `NOT_FOUND` | 404 | Unknown HTTP route |
 | `INTERNAL_ERROR` | 500 equivalent | Unrecognized server/database failure |
 
@@ -497,10 +505,13 @@ account lookup was added. Offline presence is not a message rejection. History
 still returns `{ messages: [] }` when its existing query returns no authorized
 rows. No new authorization/disclosure distinctions or group endpoints are added.
 
-CHATAPP-50 database errors remain separate: `ROOM_NOT_FOUND`, `GROUP_ROOM_REQUIRED`
-and `MEMBER_REJOIN_REQUIRED` are internal `RoomOperationError` codes. Their future
-API/service adapter must explicitly recognize that type and choose controlled
-public mappings. Do not serialize these errors or PostgreSQL exceptions directly.
+Group HTTP errors use the same `{ status, code, message }` structure while
+preserving existing statuses and controlled messages. Routes recognize database
+room failures through the private `roomOperationCode` mapping; arbitrary exception
+fields cannot select a public group error. Missing member checks run inside the
+membership transaction, after authorization, and fail without partial writes.
+Only errors raised at the JSON parsing boundary select parser-specific codes;
+downstream exceptions with parser-like fields remain `INTERNAL_ERROR`.
 
 CHATAPP-8 implements logout, session revocation and connected-session expiration.
 CHATAPP-28 adds `logging.js` for controlled failure records. It accepts only fixed
@@ -757,9 +768,9 @@ codes. Neither drafts nor raw database exceptions are logged.
 Updates take the existing session SHARE lock inside a transaction before writing
 the user row. Logout either waits for an admitted update or commits first and
 prevents that update. PostgreSQL's existing timestamp trigger and schema remain
-unchanged; no migration or runtime dependency is required. The separate existing
-registration limit of 100 versus the database's 64 should be coordinated with
-Anand rather than widening the schema here.
+unchanged; no migration or runtime dependency is required. Registration also
+enforces the existing 64-character display-name limit and ASCII username format;
+the existing minimum username length of three is preserved.
 
 `test/profile.test.js` covers HTTP validation, ownership, Unicode, safe fields and
 errors; `test/profile.database.test.js` covers real registration/login, durable

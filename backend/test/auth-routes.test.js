@@ -207,3 +207,20 @@ test("login rejects a nonexistent username", async (t) => {
   assert.equal(response.status, 401);
   assert.equal((await response.json()).code, "INVALID_CREDENTIALS");
 });
+
+test("registration rejects schema-invalid names before database writes and accepts Unicode boundaries", async t => {
+  const { pool, baseUrl } = await startTestServer(t);
+  const register = body => fetch(`${baseUrl}/api/auth/register`, { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const valid = { username: "valid_name", displayName: "Valid", password: randomBytes(24).toString("hex") };
+  for (const patch of [{ username: "bad-name" }, { username: "猫猫猫" }, { username: "a".repeat(65) },
+    { displayName: "a".repeat(65) }, { displayName: "\u0085 \t" }, { displayName: "\ud800" }, { displayName: "a\0b" }]) {
+    const result = await register({ ...valid, ...patch });
+    assert.equal(result.status, 400);
+    assert.equal((await result.json()).code, "INVALID_INPUT");
+    assert.equal(pool.users.length, 0);
+  }
+  const result = await register({ ...valid, username: "a".repeat(64), displayName: "🐱".repeat(64) });
+  assert.equal(result.status, 201);
+  assert.equal((await result.json()).user.display_name, "🐱".repeat(64));
+});

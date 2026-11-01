@@ -174,24 +174,31 @@ test(
           clientId,
         };
 
-        const firstDelivery = waitForEvent(bob, "newMessage");
-        const first = await sendMessage(alice, payload);
-        assert.equal(first.ok, true);
-        await firstDelivery;
+        const deliveries = [];
+        const record = message => { if (message.text === payload.text) deliveries.push(message); };
+        bob.on("newMessage", record);
+        try {
+          const firstDelivery = waitForEvent(bob, "newMessage");
+          const first = await sendMessage(alice, payload);
+          assert.equal(first.ok, true);
+          await firstDelivery;
 
-        // A retry is acknowledged, but should not emit a second delivery.
-        const second = await sendMessage(alice, payload);
-        assert.equal(second.ok, true);
-        assert.deepEqual(second.message, first.message);
+          // A retry is acknowledged, but should not emit a second delivery.
+          const second = await sendMessage(alice, payload);
+          assert.equal(second.ok, true);
+          assert.deepEqual(second.message, first.message);
 
-        const { rows: [count] } = await pool.query(
-          `SELECT count(*)::int AS count
-           FROM messages
-           WHERE sender_id = $1 AND client_id = $2`,
-          [USERS[0][0], clientId],
-        );
+          const { rows: [count] } = await pool.query(
+            `SELECT count(*)::int AS count
+             FROM messages
+             WHERE sender_id = $1 AND client_id = $2`,
+            [USERS[0][0], clientId],
+          );
 
-        assert.equal(count.count, 1);
+          assert.equal(count.count, 1);
+          await new Promise(resolve => setTimeout(resolve, 150));
+          assert.deepEqual(deliveries, [first.message]);
+        } finally { bob.off("newMessage", record); }
       });
 
       await t.test(

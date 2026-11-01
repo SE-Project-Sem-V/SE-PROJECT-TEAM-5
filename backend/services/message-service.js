@@ -173,12 +173,15 @@ async function saveDirectMessage(
     }
 
     return {
-      id: row.id,
-      roomId: row.room_id,
-      userId: row.sender_id,
-      to: recipientId,
-      text: row.content,
-      timestamp: new Date(row.created_at).toISOString(),
+      message: {
+        id: row.id,
+        roomId: row.room_id,
+        userId: row.sender_id,
+        to: recipientId,
+        text: row.content,
+        timestamp: new Date(row.created_at).toISOString(),
+      },
+      created,
     };
   });
 }

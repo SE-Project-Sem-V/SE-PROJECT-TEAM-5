@@ -129,6 +129,42 @@ describe('ReconnectManager heartbeat (CHAT-NF-003)', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('reauthenticates an inactive namespace after a transient protected-operation failure', () => {
+    const socket = fakeSocket();
+    const statuses = [];
+    const stop = createReconnectManager(socket, status => statuses.push(status));
+    socket.handlers.connect();
+    socket.handlers['auth:session-ended']({ code: 'INTERNAL_ERROR' });
+    socket.connected = false;
+    socket.active = false;
+    socket.handlers.disconnect('io server disconnect');
+    expect(statuses.at(-1)).toBe('reconnecting');
+    vi.advanceTimersByTime(999);
+    expect(socket.connect).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(socket.connect).toHaveBeenCalledTimes(1);
+    stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(['cleanup', 'AUTH_REVOKED', 'AUTH_EXPIRED'])('cancels a protected-operation retry on %s', reason => {
+    const socket = fakeSocket();
+    const ended = vi.fn();
+    const stop = createReconnectManager(socket, vi.fn(), ended);
+    socket.handlers.connect();
+    socket.handlers['auth:session-ended']({ code: 'INTERNAL_ERROR' });
+    socket.connected = false;
+    socket.active = false;
+    socket.handlers.disconnect('io server disconnect');
+    if (reason === 'cleanup') stop();
+    else socket.handlers['auth:session-ended']({ code: reason });
+    vi.advanceTimersByTime(20000);
+    expect(socket.connect).not.toHaveBeenCalled();
+    if (reason !== 'cleanup') expect(ended).toHaveBeenCalledWith(reason);
+    stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it.each(['AUTH_REQUIRED', 'AUTH_INVALID', 'AUTH_EXPIRED', 'AUTH_REVOKED'])('cancels a scheduled retry on %s', code => {
     const socket = fakeSocket();
     socket.connected = false;

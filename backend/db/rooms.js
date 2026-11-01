@@ -3,7 +3,7 @@ const { withTransaction } = require("./pool");
 const trustedRoomErrors = new WeakMap();
 const ROOM_CODES = new Set([
   "MEMBER_REJOIN_REQUIRED", "ROOM_NOT_FOUND", "GROUP_ROOM_REQUIRED",
-  "ROOM_CREATOR_REQUIRED", "ROOM_ACCESS_DENIED",
+  "ROOM_CREATOR_REQUIRED", "ROOM_ACCESS_DENIED", "MEMBER_NOT_FOUND",
 ]);
 
 class RoomOperationError extends Error {
@@ -28,6 +28,14 @@ function checkMemberIds(memberIds) {
 
 // Internal primitive: the caller owns the transaction and has locked the room.
 async function insertGroupMembers(client, roomId, memberIds) {
+  // Lock referenced users in the insertion transaction, after room authorization.
+  const users = await client.query(
+    "SELECT id FROM users WHERE id = ANY($1::uuid[]) ORDER BY id FOR KEY SHARE",
+    [memberIds],
+  );
+  if (users.rows.length !== new Set(memberIds.map(id => id.toLowerCase())).size) {
+    throw new RoomOperationError("MEMBER_NOT_FOUND");
+  }
   const { rows } = await client.query(
     `SELECT user_id, left_at FROM room_members
      WHERE room_id = $1 AND user_id = ANY($2::uuid[])

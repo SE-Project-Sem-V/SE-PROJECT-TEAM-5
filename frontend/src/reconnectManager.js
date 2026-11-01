@@ -25,6 +25,7 @@ export function createReconnectManager(socket, onStatus, onAuthFailure = () => {
   let generation = 0; // lets answers that arrive after a stop or restart be ignored
   let terminal = false;
   let serverClosed = false;
+  let transientSessionFailure = false;
   let authRetryTimer = null;
   let authRetryAttempts = 0;
 
@@ -51,6 +52,7 @@ export function createReconnectManager(socket, onStatus, onAuthFailure = () => {
   function endSession(code) {
     if (terminal || !isSessionFailure(code)) return;
     terminal = true;
+    transientSessionFailure = false;
     cancelAuthRetry();
     stopHeartbeat();
     socket.disconnect();
@@ -104,6 +106,7 @@ export function createReconnectManager(socket, onStatus, onAuthFailure = () => {
     authRetryAttempts = 0;
     stopHeartbeat();
     serverClosed = false;
+    transientSessionFailure = false;
     onStatus('connected');
     probe();
   }
@@ -112,12 +115,23 @@ export function createReconnectManager(socket, onStatus, onAuthFailure = () => {
     cancelAuthRetry();
     stopHeartbeat();
     // 'io server disconnect' means the server closed the connection on purpose (for example after
-    // logout or an invalid token). Socket.IO does not retry in that case.
-    if (reason === 'io server disconnect') { serverClosed = true; onStatus('disconnected'); }
+    // logout or an invalid token). Only an explicit transient failure permits retry.
+    if (reason === 'io server disconnect' && transientSessionFailure && !terminal) {
+      transientSessionFailure = false;
+      serverClosed = false;
+      retryAuthentication();
+    } else if (reason === 'io server disconnect') { serverClosed = true; onStatus('disconnected'); }
     else if (reason !== 'io client disconnect') onStatus('reconnecting');
   }
 
-  function handleSessionEnded(data) { endSession(data?.code); }
+  function handleSessionEnded(data) {
+    if (!terminal && data?.code === 'INTERNAL_ERROR') {
+      // Reauthenticate after the server fails closed on a session-store outage.
+      // A new connection must still pass every normal session check.
+      transientSessionFailure = true;
+      stopHeartbeat();
+    } else endSession(data?.code);
+  }
   function handleConnectError(error) {
     if (isSessionFailure(error?.data?.code)) endSession(error.data.code);
     else if (!terminal && error?.data?.code === 'INTERNAL_ERROR' && socket.active === false) retryAuthentication();
