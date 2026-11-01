@@ -158,6 +158,77 @@ test("TC-AUTH-02 durable current-session logout against isolated PostgreSQL", { 
     assert.equal(pong.status, "success");
   });
 
+  await t.test("TC-HIST-01 direct and group history persist through relogin and enforce membership and revocation", async () => {
+    const register = async username => {
+      const result = await request("/api/auth/register", null, { username, displayName: username, password });
+      assert.equal(result.status, 201);
+      return { id: result.body.user.id, token: result.body.token };
+    };
+    const author = await register("history_author");
+    const reader = await register("history_reader");
+    const outsider = await register("history_outsider");
+    const direct = await request(`/api/users/${reader.id}/conversation`, author.token, {});
+    const group = await request("/api/rooms", author.token, { name: "History", memberIds: [reader.id] });
+    assert.equal(direct.status, 200);
+    assert.equal(group.status, 201);
+    const roomId = group.body.room.id;
+    const writer = (await connect(author.token)).socket;
+    assert.ok(writer);
+    const send = payload => new Promise((resolve, reject) => writer.timeout(3000).emit("sendMessage",
+      { ...payload, clientId: randomUUID() }, (error, response) => error ? reject(error) : resolve(response)));
+    try {
+      const directIds = [];
+      const groupIds = [];
+      for (const [target, ids] of [[{ to: reader.id }, directIds], [{ roomId }, groupIds]]) {
+        for (const text of ["Later history message", "Earlier history message"]) {
+          const result = await send({ ...target, text });
+          assert.equal(result.ok, true);
+          ids.push(result.message.id);
+        }
+      }
+      // Deliberately reverse insertion/time order in this private test schema.
+      await pool.query("UPDATE messages SET created_at = $1 WHERE id = ANY($2::uuid[])",
+        ["2026-10-01T12:00:00Z", [directIds[0], groupIds[0]]]);
+      await pool.query("UPDATE messages SET created_at = $1 WHERE id = ANY($2::uuid[])",
+        ["2026-10-01T11:00:00Z", [directIds[1], groupIds[1]]]);
+      const paths = [`/api/users/${author.id}/messages`, `/api/rooms/${roomId}/messages`];
+      const expected = [directIds.toReversed(), groupIds.toReversed()];
+      const snapshots = [];
+      for (const [index, path] of paths.entries()) {
+        const result = await request(path, reader.token);
+        assert.equal(result.status, 200);
+        assert.deepEqual(result.body.messages.map(message => message.id), expected[index]);
+        assert.equal(new Set(result.body.messages.map(message => message.id)).size, 2);
+        snapshots.push(result.body);
+        assert.deepEqual((await request(path, reader.token)).body, result.body);
+      }
+      assert.equal((await request(`/api/users/${reader.id}/messages`, outsider.token)).body.messages.length, 0);
+      const forbidden = await request(paths[1], outsider.token);
+      assert.equal(forbidden.status, 403);
+      assert.equal(forbidden.body.code, "ROOM_ACCESS_DENIED");
+      for (const [id, path, status] of [[direct.body.conversation.id, paths[0], 200], [roomId, paths[1], 403]]) {
+        await pool.query("UPDATE room_members SET left_at = clock_timestamp() WHERE room_id = $1 AND user_id = $2", [id, reader.id]);
+        const denied = await request(path, reader.token);
+        assert.equal(denied.status, status);
+        if (status === 200) assert.deepEqual(denied.body, { messages: [] });
+        else assert.equal(denied.body.code, "ROOM_ACCESS_DENIED");
+        await pool.query("UPDATE room_members SET left_at = NULL WHERE room_id = $1 AND user_id = $2", [id, reader.id]);
+      }
+      assert.equal((await request("/api/auth/logout", reader.token, {})).status, 200);
+      for (const path of paths) {
+        const denied = await request(path, reader.token);
+        assert.equal(denied.status, 401);
+        assert.equal(denied.body.code, "AUTH_REVOKED");
+      }
+      const renewed = await login("history_reader");
+      const restarted = await start();
+      for (const [index, path] of paths.entries()) {
+        assert.deepEqual((await request(path, renewed)).body, snapshots[index]);
+        assert.deepEqual((await request(path, renewed, undefined, restarted)).body, snapshots[index]);
+      }
+    } finally { writer.disconnect(); }
+  });
+
   await t.test("logout invalidates all sockets of A, preserves B and keeps the user online", async () => {
     const presence = [];
     b.on("presenceUpdate", value => presence.push(value));
