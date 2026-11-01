@@ -119,6 +119,25 @@ test(
 
       let roomId;
 
+      await t.test("registration validates PostgreSQL name constraints without 500 responses", async () => {
+        const password = randomBytes(24).toString("hex");
+        const before = (await pool.query("SELECT count(*)::int AS count FROM users")).rows[0].count;
+        const body = { username: "registration_probe", displayName: "Valid", password };
+        for (const patch of [{ username: "bad-name" }, { username: "a".repeat(65) },
+          { displayName: "a".repeat(65) }, { displayName: "\u0085\t " },
+          { displayName: "\ud800" }, { displayName: "a\0b" }]) {
+          const result = await request(`${baseUrl}/api/auth/register`, null, "POST", { ...body, ...patch });
+          assert.equal(result.status, 400);
+          assert.equal(result.body.code, "INVALID_INPUT");
+        }
+        assert.equal((await pool.query("SELECT count(*)::int AS count FROM users")).rows[0].count, before);
+        const valid = await request(`${baseUrl}/api/auth/register`, null, "POST",
+          { ...body, username: "a".repeat(64), displayName: "🐱".repeat(64) });
+        assert.equal(valid.status, 201);
+        const stored = await pool.query("SELECT display_name FROM users WHERE id = $1", [valid.body.user.id]);
+        assert.equal(stored.rows[0].display_name, "🐱".repeat(64));
+      });
+
       await t.test(
         "authenticated creator creates a group and becomes a member",
         async () => {
@@ -175,6 +194,7 @@ test(
           );
 
           assert.equal(result.status, 403);
+          assert.equal(result.body.code, "ROOM_CREATOR_REQUIRED");
         },
       );
 
@@ -194,6 +214,21 @@ test(
           assert.equal(result.status, 401);
         },
       );
+
+      await t.test("unknown group members return controlled errors and roll back both operations", async () => {
+        const counts = async () => (await pool.query(
+          "SELECT (SELECT count(*)::int FROM chat_rooms) AS rooms, (SELECT count(*)::int FROM room_members) AS members")).rows[0];
+        const before = await counts();
+        const memberIds = [member.id, randomUUID()];
+        for (const [path, body] of [["/api/rooms", { name: "Must roll back", memberIds }],
+          [`/api/rooms/${roomId}/members`, { memberIds }]]) {
+          const result = await request(baseUrl + path, creatorToken, "POST", body);
+          assert.equal(result.status, 404);
+          assert.deepEqual(result.body, { status: "error", code: "MEMBER_NOT_FOUND",
+            message: "One or more selected users do not exist." });
+          assert.deepEqual(await counts(), before);
+        }
+      });
     } finally {
       if (chat) await chat.close();
       if (pool) await pool.end();

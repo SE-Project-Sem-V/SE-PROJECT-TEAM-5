@@ -119,7 +119,7 @@ function registerMessageHandlers({
     }
 
     try {
-      callback({ ok: true, message: isGroupMessage ? result.message : result });
+      callback({ ok: true, message: result.message });
     } catch {
       logFailure(logger, "message.ack.failed", "INTERNAL_ERROR", { scope });
       return;
@@ -140,8 +140,8 @@ function registerMessageHandlers({
             io.to(`user:${memberId}`).emit("newMessage", broadcastMessage);
           }
         }
-      } else {
-        io.to(`user:${result.to}`).emit("newMessage", result);
+      } else if (result.created) {
+        io.to(`user:${result.message.to}`).emit("newMessage", result.message);
       }
     } catch {
       logFailure(logger, "message.broadcast.failed", "INTERNAL_ERROR", { scope });

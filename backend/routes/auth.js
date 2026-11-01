@@ -21,12 +21,13 @@ function createAuthRouter({ pool, jwtSecret, onLogout }) {
 
       if (
         typeof username !== "string" ||
-        username.trim().length < 3 ||
-        username.trim().length > 64 ||
+        !/^[A-Za-z0-9_]{3,64}$/.test(username.trim()) ||
         typeof password !== "string" ||
         typeof displayName !== "string" ||
-        !displayName.trim() ||
-        displayName.trim().length > 100
+        !displayName.isWellFormed() ||
+        displayName.includes("\0") ||
+        !/[^\p{White_Space}\uFEFF]/u.test(displayName) ||
+        Array.from(displayName.trim()).length > 64
       ) {
         return sendHttpError(res, new AppError("INVALID_INPUT", "registration"));
       }

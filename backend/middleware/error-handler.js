@@ -1,5 +1,6 @@
 const { AppError, httpErrorResponse, sendHttpError } = require("../errors");
 const { logFailure } = require("../logging");
+const express = require("express");
 
 const PARSER_ERRORS = new Map([
   ["entity.parse.failed", "INVALID_JSON"],
@@ -10,15 +11,18 @@ const PARSER_ERRORS = new Map([
   ["request.size.invalid", "INVALID_INPUT"],
 ]);
 
+function createJsonParser() {
+  const parse = express.json();
+  return (req, res, next) => parse(req, res, error => {
+    if (!error) return next();
+    // Only errors originating at the parser boundary may select parser codes.
+    next(new AppError(PARSER_ERRORS.get(error.type) || "INTERNAL_ERROR"));
+  });
+}
+
 function createHttpErrorHandler(logger = console) {
   return function httpErrorHandler(error, _req, res, _next) {
-    let parserCode;
-    try {
-      parserCode = PARSER_ERRORS.get(error?.type);
-    } catch {
-      // Exception fields are untrusted; the normalizer will choose INTERNAL_ERROR.
-    }
-    const { status, body } = httpErrorResponse(parserCode ? new AppError(parserCode) : error);
+    const { status, body } = httpErrorResponse(error);
     // All logged values are controlled here. Raw errors may contain a complete
     // request body, SQL details, authorization headers or credential fragments.
     logFailure(logger, "http.request.failed", body.code, { status });
@@ -36,4 +40,4 @@ function notFound(_req, res) {
   return sendHttpError(res, new AppError("NOT_FOUND"));
 }
 
-module.exports = { createHttpErrorHandler, notFound };
+module.exports = { createHttpErrorHandler, createJsonParser, notFound };

@@ -244,10 +244,11 @@ test(
           [secondRoom.id, creator.id],
         );
 
+        const clientId = `denied-${randomUUID()}`;
         const response = await sendMessage(sockets[1], {
           roomId: secondRoom.id,
           text: "Must be denied",
-          clientId: `denied-${randomUUID()}`,
+          clientId,
         });
 
         assert.equal(response.ok, false);
@@ -255,7 +256,7 @@ test(
 
         const { rows } = await pool.query(
           "SELECT id FROM messages WHERE client_id = $1",
-          [response.message?.clientId ?? "nonexistent"],
+          [clientId],
         );
         assert.equal(rows.length, 0);
       });

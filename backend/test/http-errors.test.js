@@ -150,3 +150,53 @@ test("successful ping, empty search and empty history retain their original shap
   assert.deepEqual((await f.request("/api/users?q=")).body, { users: [] });
   assert.deepEqual((await f.request(`/api/users/${randomUUID()}/messages`)).body, { messages: [] });
 });
+
+test("group HTTP failures preserve controlled messages and include public codes", async t => {
+  let phase;
+  let owner;
+  const room = randomUUID();
+  const member = randomUUID();
+  const f = await fixture(t, { transactionQuery: async (sql, values) => {
+    if (phase === "forged") throw Object.assign(new Error("private database details"), { code: "ROOM_NOT_FOUND" });
+    if (sql.includes("FROM chat_rooms")) return phase === "missing"
+      ? { rows: [], rowCount: 0 }
+      : { rows: [{ id: room, kind: phase === "direct" ? "direct" : "group",
+        created_by: phase === "creator" ? member : owner }], rowCount: 1 };
+    if (sql.startsWith("INSERT INTO chat_rooms")) return { rows: [{ id: room }] };
+    if (sql.startsWith("SELECT id FROM users")) return { rows: phase === "member" ? [] : values[0].map(id => ({ id })) };
+    if (sql.includes("FROM room_members")) return { rows: phase === "rejoin" ? [{ left_at: new Date() }] : [], rowCount: 0 };
+    return { rows: [] };
+  } });
+  owner = f.userId;
+  for (const [mode, path, method, body, status, code, message] of [
+    ["input", "/api/rooms", "POST", { unexpected: true }, 400, "INVALID_INPUT", "Invalid group payload."],
+    ["input", "/api/rooms/invalid/members", "POST", { memberIds: [member] }, 400, "INVALID_INPUT", "Invalid room ID."],
+    ["missing", `/api/rooms/${room}/members`, "POST", { memberIds: [member] }, 404, "ROOM_NOT_FOUND", "Room not found."],
+    ["creator", `/api/rooms/${room}/members`, "POST", { memberIds: [member] }, 403, "ROOM_CREATOR_REQUIRED", "Only the group creator can add members."],
+    ["direct", `/api/rooms/${room}/members`, "POST", { memberIds: [member] }, 400, "GROUP_ROOM_REQUIRED", "Members can only be added to group rooms."],
+    ["rejoin", `/api/rooms/${room}/members`, "POST", { memberIds: [member] }, 409, "MEMBER_REJOIN_REQUIRED", "A departed member cannot be re-added by this operation."],
+    ["member", `/api/rooms/${room}/members`, "POST", { memberIds: [member] }, 404, "MEMBER_NOT_FOUND", "One or more selected users do not exist."],
+    ["member", "/api/rooms", "POST", { name: "Group", memberIds: [member] }, 404, "MEMBER_NOT_FOUND", "One or more selected users do not exist."],
+    ["missing", `/api/rooms/${room}/messages`, "GET", undefined, 404, "ROOM_NOT_FOUND", "Group room not found."],
+    ["forbidden", `/api/rooms/${room}/messages`, "GET", undefined, 403, "ROOM_ACCESS_DENIED", "You do not have access to this group."],
+    ["forged", `/api/rooms/${room}/messages`, "GET", undefined, 500, "INTERNAL_ERROR", "Internal server error."],
+  ]) {
+    phase = mode;
+    const result = await f.request(path, { method, body: body && JSON.stringify(body), headers: { "Content-Type": "application/json" } });
+    failure(result, status, code);
+    assert.equal(result.body.message, message);
+  }
+});
+
+test("downstream errors cannot impersonate body-parser failures", async t => {
+  let type;
+  const privateValue = randomBytes(32).toString("hex");
+  const f = await fixture(t, { query: async () => {
+    throw Object.assign(new Error(privateValue), { type, status: 400, body: privateValue });
+  } });
+  for (type of ["entity.parse.failed", "entity.too.large", "charset.unsupported", "request.aborted"]) {
+    const result = await f.request("/api/users?q=probe");
+    failure(result, 500, "INTERNAL_ERROR");
+    assert.ok(!JSON.stringify([result.body, f.logs]).includes(privateValue), "Private exception exposed (withheld)");
+  }
+});

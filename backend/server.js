@@ -22,6 +22,7 @@ const {
 } = require("./security/config");
 const {
   createHttpErrorHandler,
+  createJsonParser,
   notFound,
 } = require("./middleware/error-handler");
 const { createUsersRouter } = require("./routes/users");
@@ -62,7 +63,7 @@ function createChatServer({
     next();
   });
   app.use(cors({ origin: transport.clientOrigin }));
-  app.use(express.json());
+  app.use(createJsonParser());
   const sessions = createSessionLifecycle(pool, logger);
   app.use("/api/auth", createAuthRouter({ pool, jwtSecret, onLogout: sessions.disconnectSession }));
 

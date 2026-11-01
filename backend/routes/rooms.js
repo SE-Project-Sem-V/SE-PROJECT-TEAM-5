@@ -17,7 +17,7 @@ function publicMembers(members) {
 
 function groupFailure(res, status, message, code = "INVALID_INPUT") {
   res.locals?.logFailure?.("group.operation.failed", code, { status });
-  return res.status(status).json({ status: "error", message });
+  return res.status(status).json({ status: "error", code, message });
 }
 
 function createRoomsRouter({ pool, jwtSecret }) {
@@ -114,6 +114,9 @@ function createRoomsRouter({ pool, jwtSecret }) {
         },
       });
     } catch (error) {
+      if (roomOperationCode(error) === "MEMBER_NOT_FOUND") {
+        return groupFailure(res, 404, "One or more selected users do not exist.", "MEMBER_NOT_FOUND");
+      }
       return next(error);
     }
   });
@@ -177,6 +180,10 @@ function createRoomsRouter({ pool, jwtSecret }) {
 
       if (roomOperationCode(error) === "MEMBER_REJOIN_REQUIRED") {
         return groupFailure(res, 409, "A departed member cannot be re-added by this operation.", "MEMBER_REJOIN_REQUIRED");
+      }
+
+      if (roomOperationCode(error) === "MEMBER_NOT_FOUND") {
+        return groupFailure(res, 404, "One or more selected users do not exist.", "MEMBER_NOT_FOUND");
       }
 
       return next(error);
