@@ -303,7 +303,11 @@ export default function App() {
       // tempId doubles as clientId so the server can recognise a retry.
       const saved = await connection.current.sendMessage(target, content, tempId);
       if (!current()) return;
-      patchMessage(key, tempId, { ...saved, state: 'sent', error: undefined });
+      // Reconnect history may already contain the persisted ID before its ACK.
+      setMessages(prev => ({ ...prev, [key]: mergeHistory(
+        (prev[key] || []).filter(message => message.id !== tempId),
+        [{ ...saved, state: 'sent', error: undefined }],
+      ) }));
     } catch (err) {
       if (!current()) return;
       patchMessage(key, tempId, { state: 'failed', error: err.message });
