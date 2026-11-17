@@ -78,7 +78,7 @@ jobs:
             echo "SUCCESS: Final 16/16 RTM PDF found and verified."
           else
             echo "WARNING: Final 16/16 RTM PDF not found in repository root."
-          >
+          fi
 
       - name: Upload QA report and RTM
         if: always()
