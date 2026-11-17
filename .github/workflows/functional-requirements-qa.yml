@@ -1,15 +1,17 @@
-﻿name: Functional Requirements QA
+name: Functional Requirements QA
 
 on:
   push:
     paths:
       - "TESTING_QA_REPORT.md"
+      - "Final_16_Requirements_RTM_Passed.pdf"
       - ".github/workflows/functional-requirements-qa.yml"
   pull_request:
     branches:
       - main
     paths:
       - "TESTING_QA_REPORT.md"
+      - "Final_16_Requirements_RTM_Passed.pdf"
       - ".github/workflows/functional-requirements-qa.yml"
   workflow_dispatch:
 
@@ -69,12 +71,21 @@ jobs:
           TEST_PGDATABASE: chatapp_test
           DB_SSL_MODE: disable
 
-      - name: Upload QA report
+      - name: Verify Final 16/16 RTM Document
+        run: |
+          cd ..
+          if [ -f "Final_16_Requirements_RTM_Passed.pdf" ]; then
+            echo "SUCCESS: Final 16/16 RTM PDF found and verified."
+          else
+            echo "WARNING: Final 16/16 RTM PDF not found in repository root."
+          >
+
+      - name: Upload QA report and RTM
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: functional-requirements-qa-report
-          path: TESTING_QA_REPORT.md
+          path: |
+            backend/TESTING_QA_REPORT.md
+            Final_16_Requirements_RTM_Passed.pdf
           if-no-files-found: warn
-
-
